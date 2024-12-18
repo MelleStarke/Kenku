@@ -18,17 +18,20 @@ from sklearn.preprocessing import StandardScaler
 
 # TODO: standardize FFT size/frame length AND hop size/frame shift
 
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
-DATA_PATH = "/home/user/Uni/m3/thesis/project/Data"
+
+DATAPATH = "/home/user/Uni/m3/thesis/project/Data"
 
 #=== Voice Cloning Tool Kit Corpus ===#
-VCTK_PATH       = os.path.join(DATA_PATH, "raw/VCTK-Corpus-Alternative/VCTK-Corpus")
+VCTK_PATH       = os.path.join(DATAPATH, "raw/VCTK-Corpus-Alternative/VCTK-Corpus")
 VCTK_AUDIO_PATH = os.path.join(VCTK_PATH, "wav48")
 VCTK_TEXT_PATH  = os.path.join(VCTK_PATH, "txt")
 VCTK_CLASS_PATH = os.path.join(VCTK_PATH, "speaker-info.txt")
 
 #=== Speech Accent Archive ===#
-SAA_PATH       = os.path.join(DATA_PATH, "raw/SAA")
+SAA_PATH       = os.path.join(DATAPATH, "raw/SAA")
 SAA_AUDIO_PATH = os.path.join(SAA_PATH, "recordings/recordings")
 SAA_TEXT_PATH  = os.path.join(SAA_PATH, "reading-passage.txt")
 SAA_CLASS_PATH = os.path.join(SAA_PATH, "speakers_all.csv")
@@ -63,37 +66,81 @@ def walk_files(root, extension):
                 yield os.path.join(path, file)
                 
 def scaler_path(data_name: str):
-  data_path_dict = {
+  datapath_dict = {
     'VCTK': VCTK_PATH,
     'SAA' : SAA_PATH
   }
   try:
-    path = data_path_dict[data_name.upper()]
+    path = datapath_dict[data_name.upper()]
   except KeyError:
     raise KeyError(f"{data_name} is not a valid data set name. Try VCTK or SAA.")
   
   return os.path.join(path, 'melspec_scaler.pkl')
 
-def calc_melspec_scaler(data_path):
+def calc_melspec_scaler(datapath):
   melspec_scaler = StandardScaler()
   
 #########################
 ### Format Conversion ###  
 #########################
 
-def convert_data_to_melspecs(src_data_path: str, dst_data_path: str, extension: str, kwargs: dict = None):
+def convert_data_to_melspecs(src_datapath: str, 
+                             dst_datapath: str, 
+                             extension: str, 
+                             overwrite: bool = False, 
+                             kwargs: dict = None):
+    
   kwargs = MELSPEC_CREATION_KWARGS if kwargs is None else kwargs
+
+  num_files = len(list(walk_files(src_datapath, extension)))
   
-  num_files = len(list(walk_files(src_data_path, extension)))
+  if overwrite:
+    logger.warning("Overwriting existing melspec h5 files.")
+  else:
+    logger.warning("Keeping existing melspec h5 files.")
   
-  for src_filepath in tqdm(walk_files(src_data_path, extension), total=num_files):
-    # Path starting from src_data_path. Will be same in dst_data_path.
-    relative_filepath = src_filepath.replace(f"{src_data_path}/", "")
-    dst_filepath = os.path.join(dst_data_path, relative_filepath)
+  for src_filepath in tqdm(walk_files(src_datapath, extension), total=num_files):
+    # Path starting from src_datapath. Will be same in dst_datapath.
+    relative_filepath = src_filepath.replace(f"{src_datapath}/", "")
+    dst_filepath = os.path.join(dst_datapath, relative_filepath).replace(extension, '.h5')
     
-    save_audio_file_as_melspec(src_filepath, dst_filepath, kwargs=kwargs)
-    
+    if overwrite or not os.path.exists(src_filepath):
+      save_audio_file_as_melspec(src_filepath, dst_filepath, kwargs=kwargs)
+
+
+def calc_and_save_norm_stats(melspec_datapath: str, stat_filepath: str):
+  melspec_scaler = StandardScaler()
   
+  # Gather a list of all .h5 files containing mel-spectrograms
+  filepaths = list(walk_files(melspec_datapath, '.h5'))
+
+  # Compute running statistics from all mel-spectrograms
+  for filepath in tqdm(filepaths):
+    melspec = read_melspec(filepath)
+    # Transpose to (n_frames, n_mels) to match StandardScaler's expected input shape
+    melspec_scaler.partial_fit(melspec.T)
+    
+  logging.warning(f"SHAPE CHECK: {np.shape(melspec)} =? (N_timepoints, 80)")
+
+  # Save the fitted scaler (which contains the mean and variance) to a pickle file
+  with open(stat_filepath, mode='wb') as f:
+    pickle.dump(melspec_scaler, f)
+ 
+ 
+def read_melspec(filepath):
+  """
+  Read a mel-spectrogram from an HDF5 file.
+
+  Args:
+    filepath (str): The path to the HDF5 file containing the mel-spectrogram.
+
+  Returns:
+    np.ndarray: A mel-spectrogram array of shape (n_mels, n_frames).
+  """
+  with h5py.File(filepath, "r") as f:
+    melspec = f["melspec"][()]  # n_mels x n_frame
+  return melspec 
+
 def save_audio_file_as_melspec(src_filepath: str, dst_filepath: str, kwargs: dict):
   """
   Extract a mel-spectrogram from a single audio file and save it to an HDF5 file.
@@ -122,7 +169,7 @@ def save_audio_file_as_melspec(src_filepath: str, dst_filepath: str, kwargs: dic
       Logs progress and shape of extracted feature. Logs a failure message if an exception occurs.
   """
   try:
-    warnings.filterwarnings('ignore')
+    # warnings.filterwarnings('ignore')
     
     # Defaults found in ln. 105-112 and 23-31 in ConvS2S_VC/extract_features.py)
     trim_silence = kwargs['trim_silence']  # default True
@@ -148,34 +195,30 @@ def save_audio_file_as_melspec(src_filepath: str, dst_filepath: str, kwargs: dic
       
     # Extract raw mel-spectrogram features (n_frame x n_mels)
     melspec = logmelfilterbank(
-        audio,
-        samp_rate,
-        fft_size=fft_size,
-        hop_size=hop_size,
-        fmin=min_freq,
-        fmax=max_freq,
-        num_mels=num_mels
+      audio,
+      samp_rate,
+      fft_size=fft_size,
+      hop_size=hop_size,
+      fmin=min_freq,
+      fmax=max_freq,
+      num_mels=num_mels
     )
     # Convert to float32 and transpose to (n_mels, n_frames)
     melspec = melspec.astype(np.float32).T
     
     # Ensure output directory exists, then save melspec in HDF5 format
     if not os.path.exists(os.path.dirname(dst_filepath)):
-      # try:
-        # original_umask = os.umask(0)
-      os.makedirs(os.path.dirname(dst_filepath), exist_ok=True)#, mode=0o777)
-      # finally:
-      #   os.umask(original_umask)
+      os.makedirs(os.path.dirname(dst_filepath), exist_ok=True)
         
     with h5py.File(dst_filepath, "w") as f:
-        f.create_dataset("melspec", data=melspec)
+      f.create_dataset("melspec", data=melspec)
 
     # Log success and shape of the extracted mel-spectrogram
-    logging.info(f"{dst_filepath}...[{melspec.shape}].")
+    logger.info(f"Saving to {dst_filepath}... melspec shape: [{melspec.shape}].")
 
   except Exception as e:
     # Log failure if something goes wrong
-    logging.info(f"{dst_filepath}...failed.")
+    logger.info(f"Saving to {dst_filepath}...FAILED.")
     raise e
 
 def audio_file_to_spectrogram(audio_filepath: str, device: torch.device, kwargs: dict, scaler: BaseEstimator = None):
@@ -292,11 +335,11 @@ def logmelfilterbank(audio,
 if __name__ == "__main__":
   device = torch.device("cuda:0")
   
-  dst_data_path = str(os.path.join(DATA_PATH, "processed/VCTK/melspec"))
-  src_data_path = VCTK_AUDIO_PATH
+  dst_datapath = str(os.path.join(DATAPATH, "processed/VCTK/melspec"))
+  src_datapath = VCTK_AUDIO_PATH
   
-  # print(src_data_path)
-  # print(src_data_path == "./../../Data/raw/VCTK-Corpus-Alternative/VCTK-Corpus/wav48")
-  convert_data_to_melspecs(src_data_path, dst_data_path, '.wav')
+  # print(src_datapath)
+  # print(src_datapath == "./../../Data/raw/VCTK-Corpus-Alternative/VCTK-Corpus/wav48")
+  convert_data_to_melspecs(src_datapath, dst_datapath, '.wav', overwrite=True)
   
   # ./../../Data/raw/VCTK-Corpus-Alternative/VCTK-Corpus/wav48
