@@ -18,6 +18,28 @@ RAW_SAA_AUDIO_PATH  = os.path.join(RAW_SAA_PATH, "recordings/recordings")
 SAA_PATH            = os.path.join(DATA_PATH, "processed/SAA")
 SAA_MELSPEC_PATH    = os.path.join(SAA_PATH, "melspec")
 
+
+DEFAULT_CONFIG = {  # CURRENTLY BARELY USED. USING ARGPARSE DEFAULTS INSTEAD.
+  'trim_silence': True,
+  'top_db'      : 30,
+  'num_mels'    : 80,
+  
+  'fft_size': 1024,
+  'flen'    : 1024,
+  
+  'hop_size': 128,
+  'fshift'  : 128,
+  
+  'min_freq': 80,
+  'fmin'    : 80,
+  
+  'max_freq': 7600,
+  'fmax'    : 7600,
+  
+  'samp_rate': 16000,
+  'fs'       : 16000
+}
+
 def walk_files(root, extension):
     for path, dirs, files in os.walk(root):
         for file in files:
