@@ -97,10 +97,9 @@ class KameBlock(nn.Module):
     
     if len(np.shape(class_id)) == 0:
       class_id = [class_id]
-    # class_tensor = torch.LongTensor(class_value * np.ones(timesteps)).to(device, dtype=torch.int64)
     
     # Take class id list, add empty dim with unsqueeze, broadcast over timesteps.
-    # Prepration for ebmedding layer pass and appending to input.
+    # Prepration for embedding layer pass and appending to input.
     class_tensor = torch.LongTensor(class_id).unsqueeze(1).repeat(1, timesteps)
     embedding    = self.embed_layer(class_tensor).permute(0, 2, 1)
     
@@ -109,6 +108,7 @@ class KameBlock(nn.Module):
     X_emb = concat_embedding(embedding, X_)
     X_    = self.in_layer(X_emb)
     
+    # Pass through Conv GLU blocks.
     for i, layer in enumerate(self.conv_blocks):
       X_, padding = layer(X_, embedding, padding=self.paddings[i])
       self.paddings[i] = padding

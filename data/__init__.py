@@ -1,4 +1,6 @@
 import os
+import torch
+import json
 
 
 DATA_PATH  = "/home/user/Uni/m3/thesis/project/Data"
@@ -40,9 +42,62 @@ DEFAULT_CONFIG = {  # CURRENTLY BARELY USED. USING ARGPARSE DEFAULTS INSTEAD.
   'fs'       : 16000
 }
 
-def walk_files(root, extension):
-    for path, dirs, files in os.walk(root):
-        for file in files:
-            if file.endswith(extension):
-                yield os.path.join(path, file)
+###############
+### Utility ###
+###############
+
+def get_torch_device():
+  """
+  Returns device of first found CUDA compatible GPU if available. CPU otherwise.
+  """
+  if torch.cuda.is_available():
+    device = torch.device('cuda:0')
+    torch.cuda.set_device(device)   
+  else:
+    device = torch.device('cpu')
+    
+  return device
                 
+def load_config(config_path: str):
+  """
+  Loads the config found in config_path as a dict.
+  """
+  config = None
+  with open(config_path, 'r') as file:
+    config = json.load(file)
+    
+  return config
+
+def save_config(config: dict, config_path: str):
+  """
+  Saves the config at config_path as json file.
+  """
+  with open(config_path, 'w') as file:
+    json.dump(config, file, indent=4)
+    
+def merge_config(config: dict, config_path: str):
+  """
+  Merges the provided dict with the json file.
+  """
+  loaded_config = load_config(config_path)
+  merged_config = {**loaded_config, **config}
+  save_config(merged_config)
+  return merged_config
+  
+def same_config(config: dict, config_path: str):
+  """
+  Checks if the provided config dict and config dict found at config_path are equal.
+  """
+  loaded_config = load_config(config_path)
+  return config == loaded_config
+
+def walk_files(root, extension):
+  """
+  Recursively finds and provides full paths of all files 
+  with the specified extension in the provided root directory.
+  """
+  for path, dirs, files in os.walk(root):
+    for file in files:
+      if file.endswith(extension):
+        yield os.path.join(path, file)
+              

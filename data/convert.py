@@ -15,6 +15,7 @@ import soundfile as sf
 import matplotlib.pyplot as plt
 
 from __init__ import *
+from load import read_melspec
 
 from tqdm import tqdm
 
@@ -28,84 +29,12 @@ logging.basicConfig(level=logging.INFO, format=fmt, datefmt=datafmt,
                     filename=os.path.join(KENKU_PATH, "data/logs/convert.log"), filemode='a')
 
 
-# TODO: standardize FFT size/frame length AND hop size/frame shift
+# TODO: standardize names: FFT size/frame length AND hop size/frame shift
 
 
-#=== Defaults ===#
-
-
-###############
-### Utility ###
-###############
-                
-def load_config(config_path: str):
-  """
-  Loads the config found in config_path as a dict.
-  """
-  config = None
-  with open(config_path, 'r') as file:
-    config = json.load(config_path)
-    
-  return config
-
-def save_config(config: dict, config_path: str):
-  """
-  Saves the config at config_path as json file.
-  """
-  with open(config_path, 'w') as file:
-    json.dump(data_config, file, indent=4)
-  
-def same_conf(config: dict, config_path: str):
-  """
-  Checks if the provided config dict and config dict found at config_path are equal.
-  """
-  loaded_config = load_config(config_path)
-  return config == loaded_config
-
-  
 #########################
 ### Format Conversion ###  
 #########################
-
-# UNUSED DUE TO RECURSIVE FILE WALKING IN main() FUNCTION
-
-# def convert_data_to_melspecs(src_datapath: str, 
-#                              dst_datapath: str, 
-#                              extension: str, 
-#                              overwrite: bool = False, 
-#                              config: dict = None):
-
-#   num_files = len(list(walk_files(src_datapath, extension)))
-  
-#   if overwrite:
-#     logger.warning("Overwriting existing melspec h5 files.")
-#   else:
-#     logger.warning("Keeping existing melspec h5 files.")
-  
-#   for src_filepath in tqdm(walk_files(src_datapath, extension), total=num_files):
-#     # Path starting from src_datapath. Will be same in dst_datapath.
-#     relative_filepath = src_filepath.replace(f"{src_datapath}/", "")
-#     dst_filepath = os.path.join(dst_datapath, relative_filepath).replace(extension, '.h5')
-    
-#     if overwrite or not os.path.exists(src_filepath):
-#       save_audio_file_as_melspec(src_filepath, dst_filepath, kwargs=kwargs)
-
-
- 
-def read_melspec(filepath):
-  """
-  Read a mel-spectrogram from an HDF5 file.
-
-  Args:
-    filepath (str): The path to the HDF5 file containing the mel-spectrogram.
-
-  Returns:
-    np.ndarray: A mel-spectrogram array of shape (n_mels, n_frames).
-  """
-  with h5py.File(filepath, "r") as f:
-    melspec = f["melspec"][()]  # n_mels x n_frame
-  return melspec 
-
 
 def audio_file_to_melspec(src_filepath: str, dst_filepath: str, overwrite = True, config: dict = None):
   """
@@ -250,7 +179,8 @@ def calc_norm_stats(melspec_datapath: str, stat_filepath: str):
   # Compute running statistics from all mel-spectrograms
   for filepath in tqdm(filepaths):
     melspec = read_melspec(filepath)
-    # Transpose to (n_frames, n_mels) to match StandardScaler's expected input shape
+    # Transpose to (n_frames, n_mels) to match StandardScaler's expected input shape.
+    # As it expects equal dimensionality at axis 1
     melspec_scaler.partial_fit(melspec.T)
     
   # TODO: This is false!!!
@@ -260,19 +190,31 @@ def calc_norm_stats(melspec_datapath: str, stat_filepath: str):
   with open(stat_filepath, mode='wb') as f:
     pickle.dump(melspec_scaler, f)
   
-  return melspc_scaler
+  return melspec_scaler
  
 
-def apply_norm_scaler(audio_filepath: str, device: torch.device, scaler: BaseEstimator = None):
+def apply_norm_scaler(melspec_filepath: str, scaler: BaseEstimator):
   
-  if scaler is not None:
-    # Normalize mel-spectrogram (scaler expects shape (n_frame, n_mels))
-    melspec = scaler.transform(melspec)
+  melspec = read_melspec(melspec_filepath)
+  
+  old_means = np.mean(melspec, axis=1)
+  old_stds = np.std(melspec, axis=1)
+  
+  # Normalize mel-spectrogram (scaler expects shape (n_frame, n_mels), hence the double transpose)
+  melspec = scaler.transform(melspec.T).T
+  
+  # print(f"STATS:\n\tOLD:\n\t\tmean: {old_means}\n\t\tstd:  {old_stds}\n" +\
+  #       f"\tNEW:\n\t\tmean: {np.mean(melspec, axis=1)}\n\t\tstd:  {np.std(melspec, axis=1)}")
+  
+  print(f"MEANS OF STATS:\n\tOLD MEANS: {np.mean(old_means)}\n\tOLD STDS: {np.mean(old_stds)}\n" +\
+        f"\tNEW MEANS: {np.mean(np.mean(melspec, axis=1))}\n\tNEW STDS: {np.mean(np.std(melspec, axis=1))}")
 
-  # Transpose to (n_mels, n_frame) and add batch dimension (1, n_mels, n_frame)
-  melspec = melspec.T
-  melspec = torch.tensor(melspec).unsqueeze(0).to(device, dtype=torch.float)
-  print(f"MEL SPEC SHAPE: {melspec.shape}")
+  # Add batch dimension (1, n_mels, n_frame) and save to disk.
+  melspec = melspec[None,:]
+  
+  with h5py.File(melspec_filepath, "w") as f:
+      f.create_dataset("melspec", data=melspec)
+  
   return melspec
 
 
@@ -327,18 +269,15 @@ def main():
      
     args = parser.parse_args()
 
-    src = args.src
-    dst = args.dst
-    ext = args.ext
+    src_dir = args.src
+    dest_dir = args.dst
+    extension = args.ext
+    configpath = args.conf
     
     convert = not args.no_convert
     
     # Torch device setting
-    if torch.cuda.is_available():
-      device = torch.device('cuda:0')
-      torch.cuda.set_device(device)   
-    else:
-      device = torch.device('cpu')
+    device = get_torch_device()
     
 
     #=== Data Conversion ===#
@@ -358,7 +297,6 @@ def main():
       
       overwrite = not args.no_overwrite
       
-      configpath = args.conf
       if not os.path.exists(os.path.dirname(configpath)):
         os.makedirs(os.path.dirname(configpath))
       
@@ -374,9 +312,9 @@ def main():
       convert_args_list = [
           [
               f,
-              f.replace(src, dst).replace(ext, ".h5"),
+              f.replace(src_dir, dest_dir).replace(extension, ".h5"),
           ]
-          for f in walk_files(src, ext)
+          for f in walk_files(src_dir, extension)
       ]
       
       convert_kwargs = {
@@ -395,38 +333,58 @@ def main():
     #=== Normalization Stat Calculation ===#
     
     norm_scaler = None
+    norm_stat_filepath = os.path.join(os.path.dirname(dest_dir), 'norm_stats.pkl')
+    
     if args.calc_norm:
-      norm_stat_filepath = os.path.join(os.path.dirname(dst), 'norm_stats.pkl')
-      
       print("Calculating normalization statistics...")
-      
-      norm_scaler = calc_norm_stats(dst, norm_stat_filepath)
+      norm_scaler = calc_norm_stats(dest_dir, norm_stat_filepath)
 
     #=== Normalization Stat Application ===#
     
     if args.apply_norm:
-      if not args.calc_norm:
-        logging.warning("'Apply normalization' was enabled despite not being calculated this run.\n" +\
-                        "Be sure you're using the correct stats.")
       
-      norm_stat_filepath = os.path.join(os.path.dirname(dst), 'norm_stats.pkl')
+      # Abort normalization if data are already normalized
+      try:
+        already_normalized = load_config(configpath)['normalized']
+        if already_normalized:
+          logging.error("Attempted normalization on already normalized data. Aborting.\nTo force normalization anyways at own risk, " +\
+                        "either remove `normalized: True` or set to False in the data_config.json file.")
+          return
+        
+      except KeyError:  # Key 'normalized' not found indicates data haven't been normalized yet.
+        logging.info("'normalized' key not found. Data not normalized yet.")
+        pass
+      
       
       # Load from disk if it hasn't already been calculated in the last step.
       if norm_scaler is None:
+        logging.warning("'Apply normalization' was enabled despite not being calculated this run.\n" +\
+                        "Be sure you're using the correct stats.")
+        
         if os.path.exists(norm_stat_filepath):
           with open(norm_stat_filepath, mode='rb') as f:
             norm_scaler = pickle.load(f)
             logging.info('Loaded mel-spectrogram statistics successfully.')
+            
         else:
             logging.error(f'Stat file not found in {norm_stat_filepath}.')
+            return
       
-      melspec_filepaths = list(walk_files(dst, '.h5'))
+      melspec_filepaths = list(walk_files(dest_dir, '.h5'))
+      
+      # [apply_norm_scaler(melspec_filepath, norm_scaler) 
+      #  for melspec_filepath in tqdm(melspec_filepaths, total=len(melspec_filepaths))
+      # ]
+      
       
       results = joblib.Parallel(n_jobs=16)(
-        joblib.delayed(apply_norm_scaler)(melspec_filepath, device, norm_scaler)
+        joblib.delayed(apply_norm_scaler)(melspec_filepath, norm_scaler)
           for melspec_filepath in tqdm(melspec_filepaths, total=len(melspec_filepaths))
       )
 
+      # Record that the data have been normalized in the data_config.json file
+      merge_config({'normalized': True}, configpath)
+      
 
 if __name__ == '__main__':
     main()
