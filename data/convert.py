@@ -1,5 +1,3 @@
-from pprint import pp as pprint
-
 import argparse
 import joblib
 import pickle
@@ -14,13 +12,14 @@ import librosa
 import soundfile as sf
 import matplotlib.pyplot as plt
 
-from __init__ import *
-from load import read_melspec
-
 from tqdm import tqdm
 
 from sklearn.base import BaseEstimator
 from sklearn.preprocessing import StandardScaler
+
+# Local directory imports
+from __init__ import *
+from load import read_melspec
 
 # Set up logging format
 fmt = '%(asctime)s (%(module)s:%(lineno)d) %(levelname)s: %(message)s'
@@ -28,9 +27,20 @@ datafmt = '%m/%d/%Y %I:%M:%S'
 logging.basicConfig(level=logging.INFO, format=fmt, datefmt=datafmt,
                     filename=os.path.join(KENKU_PATH, "data/logs/convert.log"), filemode='a')
 
+# Specific log for normalization
+normalization_filehandler = logging.FileHandler('data/logs/normalization.log', mode = 'a')
+normalization_filehandler.setLevel(logging.INFO)
+normalization_filehandler.setFormatter(logging.Formatter(fmt))
+
+normalization_logger = logging.getLogger('normalization')
+normalization_logger.addHandler(normalization_filehandler)
+
 
 # TODO: standardize names: FFT size/frame length AND hop size/frame shift
-
+# TODO: fix job worker warning (occurs when doing full convert + norm calc + apply): 
+#   Applying normalization...
+#   /home/user/anaconda3/envs/thesis/lib/python3.12/site-packages/joblib/externals/loky/process_executor.py:752: 
+#   UserWarning: A worker stopped while some jobs were given to the executor. This can be caused by a too short worker timeout or by a memory leak.
 
 #########################
 ### Format Conversion ###  
@@ -120,7 +130,7 @@ def audio_file_to_melspec(src_filepath: str, dst_filepath: str, overwrite = True
 
   except Exception as e:
     # Log failure if something goes wrong
-    logging.info(f"Saving to {dst_filepath}...FAILED.")
+    logging.error(f"Saving to {dst_filepath}...FAILED.")
     raise e
 
 
@@ -170,7 +180,19 @@ def logmelfilterbank(audio,
 ### Normalization ###
 #####################
 
-def calc_norm_stats(melspec_datapath: str, stat_filepath: str):
+def calc_norm_scaler(melspec_datapath: str, scaler_filepath: str):
+  """
+  Use sklearn.preprocessing.StandardScaler to calculate the mean and standard deviations
+  for each mel feature (i.e. frequency) across all timepoints in all mel-spectrograms.
+  Then save the StandardScaler object as a .pkl file.
+
+  Args:
+      melspec_datapath (str): Directory containing all melspec files. Searched recursively.
+      scaler_filepath (str): Path to save the .pkl file to.
+
+  Returns:
+      sklearn.preprocessing.StandardScaler: Resulting scaler object.
+  """
   melspec_scaler = StandardScaler()
   
   # Gather a list of all .h5 files containing mel-spectrograms
@@ -183,11 +205,8 @@ def calc_norm_stats(melspec_datapath: str, stat_filepath: str):
     # As it expects equal dimensionality at axis 1
     melspec_scaler.partial_fit(melspec.T)
     
-  # TODO: This is false!!!
-  logging.warning(f"SHAPE CHECK: {np.shape(melspec)} =? (N_timepoints, 80)")
-
   # Save the fitted scaler (which contains the mean and variance) to a pickle file
-  with open(stat_filepath, mode='wb') as f:
+  with open(scaler_filepath, mode='wb') as f:
     pickle.dump(melspec_scaler, f)
   
   return melspec_scaler
@@ -202,15 +221,11 @@ def apply_norm_scaler(melspec_filepath: str, scaler: BaseEstimator):
   
   # Normalize mel-spectrogram (scaler expects shape (n_frame, n_mels), hence the double transpose)
   melspec = scaler.transform(melspec.T).T
-  
-  # print(f"STATS:\n\tOLD:\n\t\tmean: {old_means}\n\t\tstd:  {old_stds}\n" +\
-  #       f"\tNEW:\n\t\tmean: {np.mean(melspec, axis=1)}\n\t\tstd:  {np.std(melspec, axis=1)}")
-  
-  print(f"MEANS OF STATS:\n\tOLD MEANS: {np.mean(old_means)}\n\tOLD STDS: {np.mean(old_stds)}\n" +\
-        f"\tNEW MEANS: {np.mean(np.mean(melspec, axis=1))}\n\tNEW STDS: {np.mean(np.std(melspec, axis=1))}")
 
-  # Add batch dimension (1, n_mels, n_frame) and save to disk.
-  melspec = melspec[None,:]
+  normalization_logger.info(
+    f"MEANS OF STATS:\n\tOLD MEANS: {np.mean(old_means)}\n\tOLD STDS: {np.mean(old_stds)}\n" +\
+    f"\tNEW MEANS: {np.mean(np.mean(melspec, axis=1))}\n\tNEW STDS: {np.mean(np.std(melspec, axis=1))}"
+  )
   
   with h5py.File(melspec_filepath, "w") as f:
       f.create_dataset("melspec", data=melspec)
@@ -322,7 +337,7 @@ def main():
         'config'   : data_config,
       }
 
-      print('Extracting features...')
+      print('Converting audio files to mel-spectrograms...')
 
       # Process all files in parallel
       results = joblib.Parallel(n_jobs=16)(
@@ -333,11 +348,11 @@ def main():
     #=== Normalization Stat Calculation ===#
     
     norm_scaler = None
-    norm_stat_filepath = os.path.join(os.path.dirname(dest_dir), 'norm_stats.pkl')
+    norm_scaler_filepath = os.path.join(os.path.dirname(dest_dir), 'norm_scaler.pkl')
     
     if args.calc_norm:
-      print("Calculating normalization statistics...")
-      norm_scaler = calc_norm_stats(dest_dir, norm_stat_filepath)
+      print("Calculating normalization scaler...")
+      norm_scaler = calc_norm_scaler(dest_dir, norm_scaler_filepath)
 
     #=== Normalization Stat Application ===#
     
@@ -359,15 +374,15 @@ def main():
       # Load from disk if it hasn't already been calculated in the last step.
       if norm_scaler is None:
         logging.warning("'Apply normalization' was enabled despite not being calculated this run.\n" +\
-                        "Be sure you're using the correct stats.")
+                        "Be sure you're using the correct scaler.")
         
-        if os.path.exists(norm_stat_filepath):
-          with open(norm_stat_filepath, mode='rb') as f:
+        if os.path.exists(norm_scaler_filepath):
+          with open(norm_scaler_filepath, mode='rb') as f:
             norm_scaler = pickle.load(f)
-            logging.info('Loaded mel-spectrogram statistics successfully.')
+            logging.info('Loaded mel-spectrogram scaler successfully.')
             
         else:
-            logging.error(f'Stat file not found in {norm_stat_filepath}.')
+            logging.error(f'Stat file not found in {norm_scaler_filepath}.')
             return
       
       melspec_filepaths = list(walk_files(dest_dir, '.h5'))
@@ -375,7 +390,8 @@ def main():
       # [apply_norm_scaler(melspec_filepath, norm_scaler) 
       #  for melspec_filepath in tqdm(melspec_filepaths, total=len(melspec_filepaths))
       # ]
-      
+      normalization_logger.info(f"Starting melspec normalization of {dest_dir}")
+      print("Applying normalization...")
       
       results = joblib.Parallel(n_jobs=16)(
         joblib.delayed(apply_norm_scaler)(melspec_filepath, norm_scaler)

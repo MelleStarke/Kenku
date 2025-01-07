@@ -81,7 +81,7 @@ def merge_config(config: dict, config_path: str):
   """
   loaded_config = load_config(config_path)
   merged_config = {**loaded_config, **config}
-  save_config(merged_config)
+  save_config(merged_config, config_path)
   return merged_config
   
 def same_config(config: dict, config_path: str):
