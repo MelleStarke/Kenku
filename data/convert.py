@@ -12,6 +12,8 @@ import librosa
 import soundfile as sf
 import matplotlib.pyplot as plt
 
+from pathlib import Path
+
 from tqdm import tqdm
 
 from sklearn.base import BaseEstimator
@@ -21,18 +23,34 @@ from sklearn.preprocessing import StandardScaler
 from __init__ import *
 from load import read_melspec
 
-# Set up logging format
-fmt = '%(asctime)s (%(module)s:%(lineno)d) %(levelname)s: %(message)s'
-datafmt = '%m/%d/%Y %I:%M:%S'
-logging.basicConfig(level=logging.INFO, format=fmt, datefmt=datafmt,
-                    filename=os.path.join(KENKU_PATH, "data/logs/convert.log"), filemode='a')
+###############
+### Logging ###
+###############
+
+logger = logging.getLogger(__name__)
+
+# Get the full path to the directory containing the current file
+current_file_dir = Path(__file__).parent.resolve()
+logfile_path = os.path.join(current_file_dir, 'logs/convert.log')
+
+# Configure file handler
+logfile_handler = logging.FileHandler(logfile_path, mode = 'a')
+logfile_handler.setLevel(logging.DEBUG)
+logger.addHandler(logfile_handler)
+
+# Configure logging format
+log_formatter = logging.Formatter(fmt     = '%(asctime)s (%(module)s:%(lineno)d) %(levelname)s: %(message)s',
+                                  datefmt = '%m/%d/%Y %I:%M:%S')
+logfile_handler.setFormatter(log_formatter)
+
 
 # Specific log for normalization
-normalization_filehandler = logging.FileHandler('data/logs/normalization.log', mode = 'a')
-normalization_filehandler.setLevel(logging.INFO)
-normalization_filehandler.setFormatter(logging.Formatter(fmt))
-
 normalization_logger = logging.getLogger('normalization')
+
+norm_logfile_handler = logging.FileHandler(os.path.join(current_file_dir, 'logs/normalization.log'), mode = 'a')
+norm_logfile_handler.setLevel(logging.DEBUG)
+norm_logfile_handler.setFormatter(log_formatter)
+
 normalization_logger.addHandler(normalization_filehandler)
 
 
@@ -75,7 +93,7 @@ def audio_file_to_melspec(src_filepath: str, dst_filepath: str, overwrite = True
   """
   # Don't convert if set to "not overwrite" and file already exists.
   if not overwrite and os.path.exists(dst_filepath):
-    logging.info(f"File {dst_filepath} already exists. Skipping.")
+    logger.info(f"File {dst_filepath} already exists. Skipping.")
     return
   
   config = DEFAULT_CONFIG if config is None else config
@@ -126,11 +144,11 @@ def audio_file_to_melspec(src_filepath: str, dst_filepath: str, overwrite = True
       f.create_dataset("melspec", data=melspec)
 
     # Log success and shape of the extracted mel-spectrogram
-    logging.info(f"Saving to {dst_filepath}... melspec shape: [{melspec.shape}].")
+    logger.info(f"Saving to {dst_filepath}... melspec shape: [{melspec.shape}].")
 
   except Exception as e:
     # Log failure if something goes wrong
-    logging.error(f"Saving to {dst_filepath}...FAILED.")
+    logger.error(f"Saving to {dst_filepath}...FAILED.")
     raise e
 
 
@@ -317,7 +335,7 @@ def main():
       
       # Warn the user if trying to keep melspec data made with a different config.
       elif not overwrite and not same_config(data_config, configpath):
-        logging.warning("Keeping old melspecs despite configs not matching.\n" +\
+        logger.warning("Keeping old melspecs despite configs not matching.\n" +\
                       f"\tOld config:\n{dict(sorted(load_config(configpath).items()))}\n\n" +\
                       f"\tNew config:\n{dict(sorted(data_config.items()))}\n")
         
@@ -362,27 +380,27 @@ def main():
       try:
         already_normalized = load_config(configpath)['normalized']
         if already_normalized:
-          logging.error("Attempted normalization on already normalized data. Aborting.\nTo force normalization anyways at own risk, " +\
+          logger.error("Attempted normalization on already normalized data. Aborting.\nTo force normalization anyways at own risk, " +\
                         "either remove `normalized: True` or set to False in the data_config.json file.")
           return
         
       except KeyError:  # Key 'normalized' not found indicates data haven't been normalized yet.
-        logging.info("'normalized' key not found. Data not normalized yet.")
+        logger.info("'normalized' key not found. Data not normalized yet.")
         pass
       
       
       # Load from disk if it hasn't already been calculated in the last step.
       if norm_scaler is None:
-        logging.warning("'Apply normalization' was enabled despite not being calculated this run.\n" +\
+        logger.warning("'Apply normalization' was enabled despite not being calculated this run.\n" +\
                         "Be sure you're using the correct scaler.")
         
         if os.path.exists(norm_scaler_filepath):
           with open(norm_scaler_filepath, mode='rb') as f:
             norm_scaler = pickle.load(f)
-            logging.info('Loaded mel-spectrogram scaler successfully.')
+            logger.info('Loaded mel-spectrogram scaler successfully.')
             
         else:
-            logging.error(f'Stat file not found in {norm_scaler_filepath}.')
+            logger.error(f'Stat file not found in {norm_scaler_filepath}.')
             return
       
       melspec_filepaths = list(walk_files(dest_dir, '.h5'))
