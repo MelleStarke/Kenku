@@ -7,7 +7,7 @@ from itertools import islice
 
 from __init__ import *
 
-def analyze_distribution(transcript_dir_root):
+def analyze_distribution(transcript_root):
     # Example structure:
     # transcript/
     #   p225/
@@ -86,7 +86,6 @@ def compare_sentences(log_filepath):
               similarity = difflib.SequenceMatcher(None, sentence, other_sentence).ratio()
               if similarity > 0.9:  # High similarity threshold
                   potential_matches[(sentence, other_sentence)] = similarity
-                  print()
                   print(f"Count: {count}\t| {sentence}\nCount: {other_count}\t| {other_sentence}\n---")
 
   return potential_matches
@@ -95,6 +94,6 @@ def compare_sentences(log_filepath):
 if __name__ == "__main__":
   standardized_transcript_dir = os.path.join(VCTK_PATH, "transcript_standardized")
   sentence_distribution_log_path = "./logs/standardized_sentence_distribution.log"
-  
-  # compare_sentences(sentence_distribution_log_path)
+
+  compare_sentences(sentence_distribution_log_path)
   # analyze_distribution(standardized_transcript_dir)

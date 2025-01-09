@@ -4,6 +4,10 @@ import h5py
 import logging
 import matplotlib.pyplot as plt
 
+from copy import copy
+from csv import DictReader
+from dataclasses import dataclass, field
+
 from pathlib import Path, PurePath
 
 from typing import List, Tuple, Optional, Union
@@ -68,27 +72,148 @@ def get_speaker_dirs(melspec_folder_path: str):
                      map(lambda d: os.path.join(melspec_folder_path, d), 
                          sorted(os.listdir(melspec_folder_path)))))
 
-# [os.path.join(classes_path, d) for d in sorted(os.listdir(classes_path)) 
-#           if os.path.isdir(os.path.join(classes_path, d))]
+
+@dataclass
+class MelspecSample:
+  id: str
+  speaker_id: str
+  melspec_path: str
+  transcript: str
+  age: int
+  gender: str
+  accent: str
+  melspec: Optional[object] = field(default=None) 
+  
+  def preload_melspec(self):
+    self.melspec = read_melspec(self.melspec_path)
 
 
-class MelspecDataset(Dataset):
-  def __init__(self, speaker_dirs: List[str]):
-    self.n_speakers = len(speaker_dirs)
+class MelspecDataset():
+  def __init__(self, melspec_dir: str, transcript_dir: str, speaker_properties_path: str):
+    self.speaker_ids = sorted([folder_name for folder_name in os.listdir(melspec_dir)
+                               if os.path.isdir(os.path.join(melspec_dir, folder_name))])
     
-    self.speaker_dirs = speaker_dirs
-    # Use speaker folder names as speaker IDs
-    self.speaker_ids  = [PurePath(d).name for d in speaker_dirs]
-    self.filenames = [[os.path.join(d, t) for t in sorted(os.listdir(d))] for d in speaker_dirs]
+    #=== Load Speaker Properties ===#
+    speaker_properties = {}
+    
+    with open(speaker_properties_path, "r") as file:
+      reader = DictReader(file, delimiter=",", skipinitialspace=True)
+      for row in reader:
+        speaker_id = row["ID"].strip().lower()  # Normalize speaker ID to lowercase
+        age = int(row["AGE"].strip()) if row["AGE"].strip().isdigit() else None
+        gender = row["GENDER"].strip().lower()
+        accent = row["ACCENTS"].strip().lower()
+        
+        if age is None:
+          logger.warning(f"Age of speaker {speaker_id} in {speaker_properties_path} parsed as None. Skipping entry.")
+          continue
+        
+        speaker_properties[speaker_id] = {
+          "age": age,
+          "gender": gender,
+          "accent": accent
+        }
+    
+    #=== Create Dataset Entries ===#
+    
+    # Dictionary linking sentences to dataset entry IDs
+    self.sentence_dict = {}
+    
+    self.entries = []
+    
+    for speaker_id in self.speaker_ids:
+      try:
+        props = speaker_properties[speaker_id]
+      except KeyError:
+        logger.warning(f"Speaker {speaker_id} not found in speaker properties object. Skipping entries of this speaker.")
+        continue
+        
+      for file_name in os.listdir(os.path.join(transcript_dir, speaker_id)):
+        transcript = ""
+        
+        transcript_path = os.path.join(transcript_dir, speaker_id, file_name)
+        with open(transcript_path) as file:
+          transcript = file.read().strip()
+          
+        if transcript not in self.sentence_dict:
+          # Init entry idx tracker of new sentence
+          self.sentence_dict[transcript] = []
+        # Append with index of latest entry
+        self.sentence_dict[transcript].append(len(self.entries))
+        
+        # Create new entry
+        self.entries.append(MelspecSample(file_name,
+                                          speaker_id,
+                                          transcript_path.replace('.txt', '.h5'),
+                                          transcript,
+                                          props['age'],
+                                          props['gender'],
+                                          props['accent']))
+      
+
+class TestDataset(MelspecDataset):
+  def __init__(*args, batch_size = 32, **kwargs):
+    super(TestDataset, self).__init__(*args, **kwargs)
+    
+    self.randgen = np.random.default_rng(42)
+    self.batch_size = batch_size
+    
+    self.sentence_dict = {
+      k: v for k, v in self.sentence_dict.items() if len(v) >= 20
+    }
+    
+    for entry_idx in np.concatenate(list(self.sentence_dict.values())):
+      self.entries[entry_idx].preload_melspec()
+      
+    self.iter_buffer = None
+      
+  def __iter__(self):
+    self.iter_buffer = copy(list(self.sentence_dict.values()))
+    
+  def __next__(self):
+    
+    src_melspecs = []
+    tgt_melspecs = []
+    src_classes  = []
+    tgt_classes  = []  
+    
+    for bi in range(self.batch_size):
+      if len(self.iter_buffer) == 0:
+        raise StopIteration()
+      
+      si = self.randgen.integers(len(self.iter_buffer) - 1)
+      
+      xi, yi = self.randgen.choice(self.iter_buffer[si])
+      self.iter_buffer[si].remove(xi)
+      self.iter_buffer[si].remove(yi)
+      
+      if len(self.iter_buffer[si]) < 2:
+        del(self.iter_buffer[si])
+        
+      x = self.entries[xi]
+      y = self.entries[yi]
+      
+      src_melspecs.append(x.melspec)
+      tgt_melspecs.append(y.melspec)
+      src_classes.append({'m': 0, 'f': 1}[x.gender])
+      tgt_classes.append({'m': 0, 'f': 1}[y.gender])
+  
+    return np.array(src_melspecs), np.array(src_classes), np.array(tgt_melspecs), np.array(tgt_classes)
 
 
 if __name__ == "__main__":
-  ds = MelspecDataset(get_speaker_dirs(VCTK_MELSPEC_PATH))
+  melspec_dir = os.path.join(VCTK_MELSPEC_PATH)
+  transcript_dir = os.path.join(VCTK_PATH, "transcript_standardized")
+  speaker_props_path = os.path.join(VCTK_PATH, "speaker_properties.csv")
   
-  print(ds.class_dirs)
-  print([len(d) for d in ds.filenames])
+  ds = MelspecDataset(melspec_dir, transcript_dir, speaker_props_path)
   
-  plt.bar(range(len(ds.filenames)), sorted([len(d) for d in ds.filenames]))
-  plt.ylabel("N audio samples")
-  plt.xlabel("speaker")
+  
+  
+  # print(ds.class_dirs)
+  # print([len(d) for d in ds.filenames])
+  
+  plt.bar(range(len(ds.sentence_dict)), sorted([len(d) for d in ds.sentence_dict.values()]))
+  plt.ylabel("N sentence samples")
+  plt.xlabel("sentence")
   plt.show()

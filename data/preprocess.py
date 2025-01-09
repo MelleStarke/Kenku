@@ -12,8 +12,10 @@ def standardize_text(text: str):
   Standardize the syntax of a given text.
   - Trim extra spaces
   - Ensure consistent punctuation (e.g., no spaces before punctuation)
-  - Remove trailing parentheses or extra symbols
-  - Fix inconsistent quotes
+  - Remove trailing parentheses
+  - Remove quotation marks not part of contractions
+  - Change British to American spelling
+  - Capitalize leading characters
   """
   # Remove leading/trailing whitespace and normalize internal spaces
   text = re.sub(r"\s+", " ", text.strip())
@@ -24,8 +26,11 @@ def standardize_text(text: str):
   # Ensure no spaces before punctuation (e.g., ". ", "? ")
   text = re.sub(r"\s+([.,!?])", r"\1", text)
 
-  # Remove all quotation marks (single or double)
-  text = re.sub(r"[‘’`“”'\"]", "", text)
+  # Remove double quotes and fancy quotes
+  text = re.sub(r"[‘’“”\"]", "", text)
+  
+  # Remove single quotes not part of contractions
+  text = re.sub(r"(?<!\w)'|'(?!\w)", "", text)
 
   # Final removal of leading/trailing whitespace
   text = text.strip()
@@ -66,14 +71,14 @@ def process_transcripts(input_dir, output_dir):
         with open(output_path, "w", encoding="utf-8") as f:
           f.write(standardized_text)
 
-        print(f"Processed: {text} -> {standardized_text}")
+        # print(f"Processed: {text} -> {standardized_text}")
+
 
 if __name__ == "__main__":
   # Define the input directory containing transcript .txt files
   input_directory = os.path.join(VCTK_PATH, "transcript")  # Replace with the actual path to your transcripts
 
   # Optionally define an output directory for saving the standardized files
-  # Leave as None to overwrite the original files
   output_directory = os.path.join(VCTK_PATH, "transcript_standardized")  # Replace with your desired output directory or None
 
   process_transcripts(input_directory, output_directory)
