@@ -10,7 +10,7 @@ from typing import List, Tuple, Union, Optional
 
 def calc_padding(kernel_size, dilation, stride=1):
   """
-  Calculates how much padding should be added on one side of a sequence.
+  Calculates how much padding should be prepended on one side of a sequence.
   """
   return (kernel_size-1)*dilation + 1 - stride
 
@@ -58,9 +58,9 @@ class KameBlock(nn.Module):
         dropout_rate (float, optional): drop-out rate. Defaults to 0.1.
     """
     super(KameBlock, self).__init__()
-    
     self.num_output_streams = num_output_streams
-    # Keep track of the paddings each conv layer outputs. To be used during the next forward call.
+    
+    # Keep track of the paddings each conv layer output. To be used during the next forward call.
     self.paddings = [None] * num_conv_layers
     
     if dilations is None:

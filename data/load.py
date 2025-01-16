@@ -82,16 +82,26 @@ class MelspecSample:
   age: int
   gender: str
   accent: str
-  melspec: Optional[object] = field(default=None) 
+  _melspec: Optional[object] = field(default=None) 
   
   def preload_melspec(self):
-    self.melspec = read_melspec(self.melspec_path)
+    self._melspec = read_melspec(self.melspec_path)
+    
+  @ property
+  def melspec(self):
+    if self._melspec is not None:
+      return self._melspec
+    
+    return read_melspec(self.melspec_path)
 
 
-class MelspecDataset():
-  def __init__(self, melspec_dir: str, transcript_dir: str, speaker_properties_path: str):
-    self.speaker_ids = sorted([folder_name for folder_name in os.listdir(melspec_dir)
-                               if os.path.isdir(os.path.join(melspec_dir, folder_name))])
+class ParallelMelspecDataset(Dataset):
+  def __init__(self, 
+               melspec_dir: str, 
+               transcript_dir: str, 
+               speaker_properties_path: str,
+               min_samples_per_sentence: Optional[int] = 10
+  ):
     
     #=== Load Speaker Properties ===#
     speaker_properties = {}
@@ -105,7 +115,7 @@ class MelspecDataset():
         accent = row["ACCENTS"].strip().lower()
         
         if age is None:
-          logger.warning(f"Age of speaker {speaker_id} in {speaker_properties_path} parsed as None. Skipping entry.")
+          logger.warning(f"Age of speaker {speaker_id} in {speaker_properties_path} parsed as None. Skipping sample.")
           continue
         
         speaker_properties[speaker_id] = {
@@ -116,16 +126,18 @@ class MelspecDataset():
     
     #=== Create Dataset Entries ===#
     
-    # Dictionary linking sentences to dataset entry IDs
+    # Dictionary linking sentences to dataset samples
     self.sentence_dict = {}
     
-    self.entries = []
+    # Folder names of speakers used as speaker IDs
+    speaker_ids = sorted([folder_name for folder_name in os.listdir(melspec_dir)
+                          if os.path.isdir(os.path.join(melspec_dir, folder_name))])
     
-    for speaker_id in self.speaker_ids:
+    for speaker_id in speaker_ids:
       try:
         props = speaker_properties[speaker_id]
       except KeyError:
-        logger.warning(f"Speaker {speaker_id} not found in speaker properties object. Skipping entries of this speaker.")
+        logger.warning(f"Speaker {speaker_id} not found in speaker properties object. Skipping samples of this speaker.")
         continue
         
       for file_name in os.listdir(os.path.join(transcript_dir, speaker_id)):
@@ -136,84 +148,138 @@ class MelspecDataset():
           transcript = file.read().strip()
           
         if transcript not in self.sentence_dict:
-          # Init entry idx tracker of new sentence
+          # Init add new unique sentence
           self.sentence_dict[transcript] = []
-        # Append with index of latest entry
-        self.sentence_dict[transcript].append(len(self.entries))
         
-        # Create new entry
-        self.entries.append(MelspecSample(file_name,
-                                          speaker_id,
-                                          transcript_path.replace('.txt', '.h5'),
-                                          transcript,
-                                          props['age'],
-                                          props['gender'],
-                                          props['accent']))
-      
-
-class TestDataset(MelspecDataset):
-  def __init__(*args, batch_size = 32, **kwargs):
-    super(TestDataset, self).__init__(*args, **kwargs)
-    
-    self.randgen = np.random.default_rng(42)
-    self.batch_size = batch_size
-    
-    self.sentence_dict = {
-      k: v for k, v in self.sentence_dict.items() if len(v) >= 20
-    }
-    
-    for entry_idx in np.concatenate(list(self.sentence_dict.values())):
-      self.entries[entry_idx].preload_melspec()
-      
-    self.iter_buffer = None
-      
-  def __iter__(self):
-    self.iter_buffer = copy(list(self.sentence_dict.values()))
-    
-  def __next__(self):
-    
-    src_melspecs = []
-    tgt_melspecs = []
-    src_classes  = []
-    tgt_classes  = []  
-    
-    for bi in range(self.batch_size):
-      if len(self.iter_buffer) == 0:
-        raise StopIteration()
-      
-      si = self.randgen.integers(len(self.iter_buffer) - 1)
-      
-      xi, yi = self.randgen.choice(self.iter_buffer[si])
-      self.iter_buffer[si].remove(xi)
-      self.iter_buffer[si].remove(yi)
-      
-      if len(self.iter_buffer[si]) < 2:
-        del(self.iter_buffer[si])
+        melspec_path = transcript_path.replace(transcript_dir, melspec_dir).replace('.txt', '.h5')
         
-      x = self.entries[xi]
-      y = self.entries[yi]
+        # Create new sample
+        sample = (MelspecSample(file_name,
+                                speaker_id,
+                                melspec_path,
+                                transcript,
+                                props['age'],
+                                props['gender'],
+                                props['accent']))
+        
+        # Append with new sample
+        self.sentence_dict[transcript].append(sample)
+        
+    # Remove all sentences with less samples than the specified lower bound
+    for sentence, samples in list(self.sentence_dict.items()):
+      if len(samples) < min_samples_per_sentence:
+        del(self.sentence_dict[sentence])
+    
+    # Restructure self.sentence_dict to have lists of sample indices as values per unique sentence.
+    # And store samples in a 1D list
+    self.samples = [None] * sum(map(len, self.sentence_dict.values()))
+    
+    sample_idx = 0
+    for sentence, samples in list(self.sentence_dict.items()):
+      n_samples = len(samples)
+      self.samples[sample_idx : sample_idx + n_samples] = samples
+      self.sentence_dict[sentence] = list(range(sample_idx, sample_idx + n_samples))
+      sample_idx += n_samples
       
-      src_melspecs.append(x.melspec)
-      tgt_melspecs.append(y.melspec)
-      src_classes.append({'m': 0, 'f': 1}[x.gender])
-      tgt_classes.append({'m': 0, 'f': 1}[y.gender])
+      if n_samples != len(self.sentence_dict[sentence]):
+        raise ValueError(f"list size mismatch. Went from {n_samples} to {len(self.sentence_dict[sentence])}")
+      
+    if np.concatenate(list(self.sentence_dict.values())).tolist() != list(range(len(self.samples))):
+      raise ValueError(f"Enry indices do not line up. Sentenc dict indices:\n{np.array(self.sentence_dict.values())}\n" +\
+                       f"Actual indices:\n{list(range(len(self.samples)))}")
+    
+    # A list of sample index pairs to be used for the iterator implementation
+    self.iter_idxs = []
+    
+  def init_iter_idxs(self):
+    self.iter_idxs = []
+    for sample_idxs in self.sentence_dict.values():
+      sample_idxs = sample_idxs.copy()
+      np.random.shuffle(sample_idxs)
+      # Remove the head of the list if its length is odd (i.e. make even for reshape)
+      sample_idxs = sample_idxs[1:] if len(sample_idxs) % 2 else sample_idxs
+      
+      # Reshape to list of index pairs
+      self.iter_idxs += np.reshape(sample_idxs, (-1, 2)).tolist()
   
-    return np.array(src_melspecs), np.array(src_classes), np.array(tgt_melspecs), np.array(tgt_classes)
+  def __iter__(self):
+    self.n_iter_calls += 1
+    logger.info(f"Nr. of total __iter__() calls: {self.n_iter_calls}")
+    
+    self.init_iter_idxs()
+    return self
+  
+  def __getitem__(self, idx: int):
+    if len(self.iter_idxs) == 0:
+      logger.warning("ParallelMelspecDataset.__getitem__() called with empty iterator index list.")
+      self.init_iter_idxs()
+    
+    src_idx, tgt_idx = self.iter_idxs[idx]
+      
+    src_sample = self.samples[src_idx]
+    tgt_sample = self.samples[tgt_idx]
+    
+    return [src_sample.melspec,
+            tgt_sample.melspec,
+            tgt_sample.gender]
+  
+  def __getitems__(self, idxs: List[int]):
+    if len(self.iter_idxs) == 0:
+      logger.warning("ParallelMelspecDataset.__getitems__() called with empty iterator index list.")
+      self.init_iter_idxs()
+    
+    if torch.is_tensor(idxs):
+      idxs = idxs.tolist()
+    
+    items = []
+    for idx in idxs:
+      src_idx, tgt_idx = self.iter_idxs[idx]
+      
+      src_sample = self.samples[src_idx]
+      tgt_sample = self.samples[tgt_idx]
+      
+      items.append([src_sample.melspec,
+                    tgt_sample.melspec,
+                    tgt_sample.gender])
+    
+    return items
+
+    
+  def __len__(self):
+    if len(self.iter_idxs) == 0:
+      return sum([int(floor(len(sample_list) / 2)) for sample_list in self.sentence_dict.values()])
+    
+    return len(self.iter_idxs)
+  
+  def preload_melspec(self):
+    [sample.preload_melspec() for sample in self.samples]
+      
 
 
 if __name__ == "__main__":
-  melspec_dir = os.path.join(VCTK_MELSPEC_PATH)
-  transcript_dir = os.path.join(VCTK_PATH, "transcript_standardized")
-  speaker_props_path = os.path.join(VCTK_PATH, "speaker_properties.csv")
   
-  ds = MelspecDataset(melspec_dir, transcript_dir, speaker_props_path)
+  print(current_file_dir)
   
+  # Regular data loading
+  if True:
+    dataset = ParallelMelspecDataset(melspec_dir = "../Data/processed/VCTK/melspec", 
+                                     transcript_dir = "../Data/processed/VCTK/transcript_standardized",
+                                     speaker_properties_path = "../Data/processed/VCTK/speaker_properties.csv")
+
+    sample = dataset.__getitem__([4])
   
-  
-  # print(ds.class_dirs)
-  # print([len(d) for d in ds.filenames])
-  
-  plt.bar(range(len(ds.sentence_dict)), sorted([len(d) for d in ds.sentence_dict.values()]))
-  plt.ylabel("N sentence samples")
-  plt.xlabel("sentence")
-  plt.show()
+  # Sentence sample distribution
+  if False:
+    melspec_dir = os.path.join(VCTK_MELSPEC_PATH)
+    transcript_dir = os.path.join(VCTK_PATH, "transcript_standardized")
+    speaker_props_path = os.path.join(VCTK_PATH, "speaker_properties.csv")
+    
+    ds = ParallelMelspecDataset(melspec_dir, transcript_dir, speaker_props_path)
+
+    # print(ds.class_dirs)
+    # print([len(d) for d in ds.filenames])
+    
+    plt.bar(range(len(ds.sentence_dict)), sorted([len(d) for d in ds.sentence_dict.values()]))
+    plt.ylabel("N sentence samples")
+    plt.xlabel("sentence")
+    plt.show()
