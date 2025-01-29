@@ -1,5 +1,5 @@
 from . import modules as md
 
 
-class KenkuNet():
+class KameTeacher():
   pass
