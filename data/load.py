@@ -117,7 +117,7 @@ def collate_fn(batch):
   return (src_melspec_batch, tgt_melspec_batch, 
           src_mask_batch, tgt_mark_batch, 
           src_props_batch, tgt_props_batch)
-
+    
 @dataclass
 class MelspecSample:
   id: str
@@ -159,7 +159,7 @@ class ParallelMelspecDataset(Dataset):
         speaker_id = row["ID"].strip().lower()  # Normalize speaker ID to lowercase
         age = int(row["AGE"].strip()) if row["AGE"].strip().isdigit() else None
         gender = row["GENDER"].strip().lower()
-        accent = row["ACCENTS"].strip().lower()
+        accent = row["ACCENT"].strip().lower()
         
         if age is None:
           logger.warning(f"Age of speaker {speaker_id} in {speaker_properties_path} parsed as None. Skipping sample.")
@@ -255,6 +255,16 @@ class ParallelMelspecDataset(Dataset):
       idxs = idxs.tolist()
     
     return [self[idx] for idx in idxs]
+  
+  # def class_value_to_id(self, property, value):
+  #   assert property.lower() in ['age', 'gender', 'accent'], \
+  #     "Incorrect value for arg 'property', must be one of 'id, 'age', or 'gender'."
+    
+  #   self.class_ids[property](value)
+  
+  # def class_id_to_value(self, property, id):
+  #   assert property.lower() in ['age', 'gender', 'accent'], \
+  #     "Incorrect value for arg 'property', must be one of 'id, 'age', or 'gender'."
 
   def __len__(self):
     return len(self.samples)

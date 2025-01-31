@@ -51,7 +51,7 @@ norm_logfile_handler = logging.FileHandler(os.path.join(current_file_dir, 'logs/
 norm_logfile_handler.setLevel(logging.DEBUG)
 norm_logfile_handler.setFormatter(log_formatter)
 
-normalization_logger.addHandler(normalization_filehandler)
+normalization_logger.addHandler(norm_logfile_handler)
 
 
 # TODO: standardize names: FFT size/frame length AND hop size/frame shift

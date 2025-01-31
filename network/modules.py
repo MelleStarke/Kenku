@@ -2,7 +2,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from pytorch_tcn import TCN
 from torch import Tensor
 from torch.nn.utils.parametrizations import weight_norm
 from typing import List, Tuple, Union, Optional
@@ -180,6 +179,11 @@ class ConvGLU(nn.Module):
     Y = X_scale * torch.sigmoid(X_gate)  # GLU
     Y += X  # Skip-connection
     return Y, padding
+  
+
+class Attention(nn.Module):
+  def forward(self, K, V, Q):
+    return nn.functional.scaled_dot_product_attention(Q, K, V)
     
 
 if __name__ == "__main__":
