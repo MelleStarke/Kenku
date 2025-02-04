@@ -50,7 +50,7 @@ def read_melspec(filepath):
   """
   try:
     with h5py.File(filepath, "r") as f:
-      melspec = f["melspec"][()]  # n_mels x n_frame
+      melspec = f["melspec"][()]  # n_mels x n_timesteps
       
   except KeyError as e:
     logger.error(f"'melspec' object not found in {filepath}.")
@@ -73,6 +73,8 @@ def get_speaker_dirs(melspec_folder_path: str):
                          sorted(os.listdir(melspec_folder_path)))))
   
 def signal_to_sequences(signal, seq_len = 32):
+  if torch.is_tensor(signal):
+    return torch.split(signal, seq_len, dim=-1)
   return np.split(signal, np.arange(seq_len, np.shape(signal)[-1], step=seq_len), axis=-1)
 
 def collate_fn(batch):
@@ -95,27 +97,28 @@ def collate_fn(batch):
   src_sig_lengths = [sample[0].shape[1] for sample in batch]
   tgt_sig_lengths = [sample[1].shape[1] for sample in batch]
   
-  src_maxlen = max(src_sig_lengths)
-  tgt_maxlen = max(tgt_sig_lengths)
+  max_sig_len = max(max(src_sig_lengths), max(tgt_sig_lengths))
   
-  src_melspec_batch = np.zeros((batch_size, n_mels, src_maxlen), dtype=batch[0][0].dtype)
-  tgt_melspec_batch = np.zeros((batch_size, n_mels, src_maxlen), dtype=batch[0][1].dtype)
+  src_melspec_batch = torch.zeros((batch_size, n_mels, max_sig_len), dtype=torch.float32)
+  tgt_melspec_batch = torch.zeros((batch_size, n_mels, max_sig_len), dtype=torch.float32)
   
-  src_mask_batch = np.zeros_like(src_melspec_batch)
-  tgt_mark_batch = np.zeros_like(tgt_melspec_batch)
+  src_mask_batch = torch.zeros_like(src_melspec_batch)
+  tgt_mask_batch = torch.zeros_like(tgt_melspec_batch)
   
-  src_props_batch   = np.array([sample[2] for sample in batch])
-  tgt_props_batch   = np.array([sample[3] for sample in batch])
+  gender_str_to_int = {'f': 0, 'm': 1}
+  
+  src_props_batch   = [gender_str_to_int[sample[2]] for sample in batch]
+  tgt_props_batch   = [gender_str_to_int[sample[3]] for sample in batch]
   
   for i, (src_sig_len, tgt_sig_len, (src_melspec, tgt_melspec, _, _)) in enumerate(zip(src_sig_lengths, tgt_sig_lengths, batch)):
-    src_melspec_batch[i, :, :src_sig_len] = src_melspec
-    tgt_melspec_batch[i, :, :tgt_sig_len] = tgt_melspec
+    src_melspec_batch[i, :, :src_sig_len] = torch.from_numpy(src_melspec)
+    tgt_melspec_batch[i, :, :tgt_sig_len] = torch.from_numpy(tgt_melspec)
     
     src_mask_batch[i, :, :src_sig_len] = 1.0
     tgt_mask_batch[i, :, :tgt_sig_len] = 1.0
 
   return (src_melspec_batch, tgt_melspec_batch, 
-          src_mask_batch, tgt_mark_batch, 
+          src_mask_batch, tgt_mask_batch, 
           src_props_batch, tgt_props_batch)
     
 @dataclass
