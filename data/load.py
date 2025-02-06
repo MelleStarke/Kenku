@@ -16,6 +16,8 @@ from torch.utils.data import Dataset
 
 from __init__ import *
 
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
 
 ###############
 ### Logging ###
@@ -99,11 +101,14 @@ def collate_fn(batch):
   
   max_sig_len = max(max(src_sig_lengths), max(tgt_sig_lengths))
   
-  src_melspec_batch = torch.zeros((batch_size, n_mels, max_sig_len), dtype=torch.float32)
-  tgt_melspec_batch = torch.zeros((batch_size, n_mels, max_sig_len), dtype=torch.float32)
+  src_melspec_batch = torch.zeros((batch_size, n_mels, max_sig_len), dtype=torch.float32, device=device)
+  tgt_melspec_batch = torch.zeros((batch_size, n_mels, max_sig_len), dtype=torch.float32, device=device)
   
   src_mask_batch = torch.zeros_like(src_melspec_batch)
   tgt_mask_batch = torch.zeros_like(tgt_melspec_batch)
+  
+  # print(f"collate_fn devices:\n\tsrc_mel_batch: {src_melspec_batch.device}\n\ttgt_mel_batch: {tgt_melspec_batch.device}"
+  #                          f"\n\tsrc_mask_batch: {src_mask_batch.device}\n\tsrc_mask_batch: {src_mask_batch.device}")
   
   gender_str_to_int = {'f': 0, 'm': 1}
   

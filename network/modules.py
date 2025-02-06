@@ -7,6 +7,9 @@ from torch.nn.utils.parametrizations import weight_norm
 from typing import List, Tuple, Union, Optional
 
 
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+
 def calc_padding(kernel_size, dilation, stride=1):
   """
   Calculates how much padding should be prepended on one side of a sequence.
@@ -112,13 +115,15 @@ class KameBlock(nn.Module):
     
     #=== Layers ===#
     self.dropout     = nn.Dropout(p=dropout_rate)
-    self.embed_layer = nn.Embedding(num_classes, embed_ch)  # Embedding of class values into class feature space.
-                                                            # TODO: original src code has weight norm commented out. Give a try?
+    self.embed_layer = nn.Embedding(num_classes, embed_ch).to(device)  # Embedding of class values into class feature space.
+                                                                       # TODO: original src code has weight norm commented out. Give a try?
     
     # Use 1D Conv layer as linear layer to match up shapes better.
     self.in_layer = weight_norm(nn.Conv1d(in_channels  = in_ch + embed_ch,
                                           out_channels = conv_ch,
-                                          kernel_size  = 1, padding = 0))
+                                          kernel_size  = 1, 
+                                          padding      = 0,
+                                          device       = device))
     
     self.conv_blocks = nn.ModuleList()
     for dil in dilations:
@@ -129,18 +134,19 @@ class KameBlock(nn.Module):
     
     self.out_layer = weight_norm(nn.Conv1d(in_channels  = conv_ch + embed_ch,
                                            out_channels = out_ch * num_output_streams,
-                                           kernel_size  = 1, padding = 0))
+                                           kernel_size  = 1, 
+                                           padding      = 0,
+                                           device       = device))
   
   def forward(self, X: Tensor, class_id: Union[int, List[int]]):
-    device = X.device
     batch_size, in_ch, timesteps = X.shape
     
-    if len(np.shape(class_id)) == 0:
+    if np.shape(class_id) == ():
       class_id = [class_id]
     
     # Take class id list, add empty dim with unsqueeze, broadcast over timesteps.
     # Prepration for embedding layer pass and appending to input.
-    class_tensor = torch.LongTensor(class_id).unsqueeze(1).repeat(1, timesteps)
+    class_tensor = torch.tensor(class_id, dtype=torch.int32).unsqueeze(1).to(device).repeat(1, timesteps)
     embedding    = self.embed_layer(class_tensor).permute(0, 2, 1)
     
     #=== Forward Pass ===#
@@ -174,7 +180,7 @@ class KameBlock(nn.Module):
 class ConvGLU(nn.Module):
   """1D Convolutional GLU block. Features:
       - Speaker embedding
-      - Causal "look-behind" padding (i.e. tail of the previous forward call's input)
+      - Causal padding (i.e. tail of the previous forward call's input prepended to current input)
       - Dilation
       - GLU activation (base activation function: sigmoid)
       - Skip-connection
@@ -189,11 +195,12 @@ class ConvGLU(nn.Module):
       
     self.padding_len = calc_padding(kernel_size, dilation)
     self.conv = nn.Conv1d(
-      in_ch,
-      out_ch * 2,  # Double output size for GLU (for splitting into two matrices)
-      kernel_size,
-      dilation = dilation,
-      padding = 0
+      in_channels  = in_ch,
+      out_channels = out_ch * 2,  # Double output size for GLU (for splitting into two matrices)
+      kernel_size  = kernel_size,
+      dilation     = dilation,
+      padding      = 0,
+      device       = device
     )
     self.conv = weight_norm(self.conv)
     
@@ -205,7 +212,7 @@ class ConvGLU(nn.Module):
     # Pad sequence with zeros if no padding is passed.
     if padding is None:
       # Make tensor of zeros of shape (batch_size, channels) and append empty dim at the end.
-      padding = torch.zeros_like(X_emb[:,:,1]).unsqueeze(-1)
+      padding = torch.zeros_like(X_emb[:,:,0]).unsqueeze(-1)
       padding = padding.repeat(1, 1, self.padding_len)  # Repeat zeros over empty dim for padding.
       
     
@@ -239,7 +246,7 @@ if __name__ == "__main__":
   
   
   kb = KameBlock(in_ch, conv_ch, out_ch, embed_ch, num_classes)
-  X = torch.rand(batch_size, in_ch, timesteps)
+  X = torch.rand(batch_size, in_ch, timesteps, device=device)
   Y = kb(X, [0] * 16)
   print(Y)
   print(Y.shape)

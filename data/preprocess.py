@@ -7,6 +7,10 @@ from tqdm import tqdm
 
 from __init__ import *
 
+
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+
 def standardize_text(text: str):
   """
   Standardize the syntax of a given text.

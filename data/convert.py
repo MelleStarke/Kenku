@@ -23,6 +23,10 @@ from sklearn.preprocessing import StandardScaler
 from __init__ import *
 from load import read_melspec
 
+
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+
 ###############
 ### Logging ###
 ###############

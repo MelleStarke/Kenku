@@ -169,6 +169,10 @@ cython_debug/
 # Everything in any log directory
 */logs/*
 
+# Large files
+*/checkpoints/*
+*/plots/*
+
 # Temp/Test files
 data/test_scaler.py
 
