@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 import os
 import h5py
 import logging
@@ -13,6 +14,8 @@ from pathlib import Path, PurePath
 from typing import List, Tuple, Optional, Union
 
 from torch.utils.data import Dataset
+
+from itertools import product
 
 from __init__ import *
 
@@ -104,8 +107,8 @@ def collate_fn(batch):
   src_melspec_batch = torch.zeros((batch_size, n_mels, max_sig_len), dtype=torch.float32, device=device)
   tgt_melspec_batch = torch.zeros((batch_size, n_mels, max_sig_len), dtype=torch.float32, device=device)
   
-  src_mask_batch = torch.zeros_like(src_melspec_batch)
-  tgt_mask_batch = torch.zeros_like(tgt_melspec_batch)
+  src_mask_batch = torch.zeros_like(src_melspec_batch[:,0,:]).unsqueeze(1)
+  tgt_mask_batch = torch.zeros_like(tgt_melspec_batch[:,0,:]).unsqueeze(1)
   
   # print(f"collate_fn devices:\n\tsrc_mel_batch: {src_melspec_batch.device}\n\ttgt_mel_batch: {tgt_melspec_batch.device}"
   #                          f"\n\tsrc_mask_batch: {src_mask_batch.device}\n\tsrc_mask_batch: {src_mask_batch.device}")
@@ -147,16 +150,21 @@ class MelspecSample:
     
     return read_melspec(self.melspec_path)
 
-
 class ParallelMelspecDataset(Dataset):
   def __init__(self, 
                melspec_dir: str, 
                transcript_dir: str, 
                speaker_properties_path: str,
                min_samples_per_sentence: Optional[int] = 10,
+               sample_pairing = 'random',
                rng: Optional[np.random.Generator] = None
   ):
+    assert sample_pairing.lower() in ['random', 'rand', 'product', 'prod'], \
+      f"'{sample_pairing}' not a valid entry pairing mode. Choose 'random' or 'product'."
+    
     self.rng = rng if rng else np.random.default_rng(42)
+    self.sample_pairing = sample_pairing.lower()
+    self._cartprod_sample_pairs = None
     
     #=== Load Speaker Properties ===#
     speaker_properties = {}
@@ -243,15 +251,28 @@ class ParallelMelspecDataset(Dataset):
       raise ValueError(f"Enry indices do not line up. Sentenc dict indices:\n{np.array(self.transcript_dict.values())}\n" +\
                        f"Actual indices:\n{list(range(len(self.samples)))}")
   
+  @property
+  def cartprod_sample_pairs(self):
+    if self._cartprod_sample_pairs is None:
+      self._cartprod_sample_pairs = np.concatenate([list(product(idxs, idxs)) 
+                                                   for idxs in self.transcript_dict.values()])
+      
+    return self._cartprod_sample_pairs
+  
   def __getitem__(self, idx: int):
     if isinstance(idx, slice):
       return self.__getitems__(list(range(*idx.indices(len(self)))))
     
-    tgt_sample = self.samples[idx]
+    if self.sample_pairing in ['prod', 'product']:
+      src_idx, tgt_idx = self.cartprod_sample_pairs[idx]
+      src_sample, tgt_sample = self.samples[src_idx], self.samples[tgt_idx]
+      
+    else:
+      tgt_sample = self.samples[idx]
 
-    src_candidate_idxs = self.transcript_dict[tgt_sample.transcript]
-    src_idx = self.rng.choice(src_candidate_idxs)
-    src_sample = self.samples[src_idx]
+      src_candidate_idxs = self.transcript_dict[tgt_sample.transcript]
+      src_idx = self.rng.choice(src_candidate_idxs)
+      src_sample = self.samples[src_idx]
     
     return (src_sample.melspec,
             tgt_sample.melspec,
@@ -275,7 +296,10 @@ class ParallelMelspecDataset(Dataset):
   #     "Incorrect value for arg 'property', must be one of 'id, 'age', or 'gender'."
 
   def __len__(self):
-    return len(self.samples)
+    if self.sample_pairing in ['product', 'prod']:
+      return sum(map(lambda idx_list: len(idx_list) ** 2, self.transcript_dict.values()))
+    
+    return sum(map(len, self.transcript_dict.values()))
   
   def preload_melspecs(self):
     """
@@ -284,8 +308,29 @@ class ParallelMelspecDataset(Dataset):
     """
     [sample.preload_melspec() for sample in self.samples]
     
+  def export_test_set(self, proportion=0.2, sample_pairing = 'product'):
+    assert sample_pairing.lower() in ['random', 'rand', 'product', 'prod'], \
+      f"'{sample_pairing}' not a valid entry pairing mode. Choose 'random' or 'product'."
+    
+    # Bypass init
+    test_set = ParallelMelspecDataset.__new__(ParallelMelspecDataset)
+    test_set.transcript_dict = {}
+    test_set.samples = self.samples
+    test_set.rng = self.rng
+    test_set._cartprod_sample_pairs = None
+    test_set.sample_pairing = sample_pairing.lower()
+    
+    # "Uncache" the previously calculated entry pairs
+    self._cartprod_sample_pairs = None
+    
+    for transcript, entry_idxs in self.transcript_dict.items():
+      n_train_samples = max(2, int(np.round(len(entry_idxs) * proportion)))
+      test_idxs, train_idxs = np.split(self.rng.permutation(entry_idxs), [n_train_samples])
 
-
+      self.transcript_dict[transcript] = sorted(train_idxs)
+      test_set.transcript_dict[transcript] = sorted(test_idxs)
+      
+    return test_set
     
 
 if __name__ == "__main__":
@@ -293,15 +338,25 @@ if __name__ == "__main__":
   print(current_file_dir)
   
   # Regular data loading
-  if False:
+  if True:
     dataset = ParallelMelspecDataset(melspec_dir = "../Data/processed/VCTK/melspec", 
                                      transcript_dir = "../Data/processed/VCTK/transcript_standardized",
                                      speaker_properties_path = "../Data/processed/VCTK/speaker_properties.csv")
 
-    sample = dataset.__getitem__([4])
+
+    # Test split
+    print(len(dataset))
+    test_set = dataset.export_test_set(sample_pairing='rand')
+    print(len(test_set), len(dataset))
+    print(len(test_set) + len(dataset))
+    
+    train_idxs = np.concatenate(list(dataset.transcript_dict.values()))
+    test_idxs  = np.concatenate(list(test_set.transcript_dict.values()))
+    print(set(train_idxs) & set(test_idxs))
+    print(len(set(train_idxs) | set(test_idxs)))
   
   # Sentence sample distribution
-  if True:
+  if False:
     dataset = ParallelMelspecDataset(melspec_dir = "../Data/processed/VCTK/melspec", 
                                      transcript_dir = "../Data/processed/VCTK/transcript_standardized",
                                      speaker_properties_path = "../Data/processed/VCTK/speaker_properties.csv",

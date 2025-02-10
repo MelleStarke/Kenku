@@ -79,10 +79,7 @@ def process_transcripts(input_dir, output_dir):
 
 
 if __name__ == "__main__":
-  # Define the input directory containing transcript .txt files
-  input_directory = os.path.join(VCTK_PATH, "transcript")  # Replace with the actual path to your transcripts
-
-  # Optionally define an output directory for saving the standardized files
-  output_directory = os.path.join(VCTK_PATH, "transcript_standardized")  # Replace with your desired output directory or None
+  input_directory = os.path.join(VCTK_PATH, "transcript")
+  output_directory = os.path.join(VCTK_PATH, "transcript_standardized")
 
   process_transcripts(input_directory, output_directory)
