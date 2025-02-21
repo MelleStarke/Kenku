@@ -3,7 +3,6 @@ import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
 
-from pytorch_tcn import TCN
 from torch import Tensor
 from torch.nn.utils.parametrizations import weight_norm
 from typing import List, Tuple, Union, Optional
