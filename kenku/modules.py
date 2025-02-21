@@ -100,6 +100,7 @@ class KameBlock(nn.Module):
   def forward(self, X: Tensor, class_id: Union[int, List[int]]):
     batch_size, in_ch, timesteps = X.shape
     
+    # Check if class_id is a scalar instead of a vector
     if np.shape(class_id) == ():
       class_id = [class_id]
     
@@ -190,6 +191,17 @@ class ConvGLU(nn.Module):
 
 class Attention(nn.Module):
   def forward(self, K, V, Q):
+    """Manual scaled dot product attention. Since the attention matrix should be passed for loss calculation.
+
+    Args:
+        K (Tensor): Key   tensor of shape (batch, mels, frames)
+        V (Tensor): Value tensor of shape (batch, mels, frames)
+        Q (Tensor): Query tensor of shape (batch, mels, frames)
+
+    Returns:
+        (Tensor, Tensor): Tuple of time-warped context vector sequence R of shape (batch, mels, frames)
+                          and attention matrix A of shape (batch, mels, mels).
+    """
     A = nn.functional.softmax(torch.matmul(K.permute(0,2,1), Q)/np.sqrt(K.shape[1]), dim=1)
     R = torch.matmul(V,A)
     return R, A

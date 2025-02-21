@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 
 from pathlib import Path, PurePath
 
-from typing import List, Tuple, Optional, Union
+from typing import List, Tuple, Optional, Union, Dict
 
 from torch.utils.data import Dataset
 
@@ -61,21 +61,7 @@ def read_melspec(filepath):
     logger.error(f"'melspec' object not found in {filepath}.")
     raise KeyError(e)
   
-  return melspec 
-
-def get_speaker_dirs(melspec_folder_path: str):
-  """
-  Returns a sorted list of paths to each speaker's mel-spectrogram folder.
-
-  Args:
-      melspec_folder_path (str): Directory containing all speaker folders.
-
-  Returns:
-      List[str]: List of paths to speaker folders.
-  """
-  return list(filter(os.path.isdir,
-                     map(lambda d: os.path.join(melspec_folder_path, d), 
-                         sorted(os.listdir(melspec_folder_path)))))
+  return melspec
   
 def signal_to_sequences(signal, seq_len = 32):
   if torch.is_tensor(signal):
@@ -93,8 +79,10 @@ def collate_fn(batch):
       batch (List[(ndarray, ndarray, int, int)]): List of samples.
 
   Returns:
-      (ndarray, ndarray, ndarray, ndarray): Tuple of batches of 1.) source melspecs, 2.) target melspecs, 
-                                            3.) source speaker properties, 4.) target speaker properties.
+      (Tensor, Tensor, Tensor, Tensor, List, List): 
+          Tuple of batches of 1.) source melspecs,           2.) target melspecs, 
+                              3.) source masks,              4.) target masks,
+                              5.) source speaker properties, 6.) target speaker properties.
   """
   batch_size = len(batch)
   n_mels = len(batch[0][0])  # nr. of frequency features in mel-spectrogram
@@ -126,8 +114,9 @@ def collate_fn(batch):
     tgt_mask_batch[i, :, :tgt_sig_len] = 1.0
 
   return (src_melspec_batch, tgt_melspec_batch, 
-          src_mask_batch, tgt_mask_batch, 
-          src_props_batch, tgt_props_batch)
+          src_mask_batch,    tgt_mask_batch, 
+          src_props_batch,   tgt_props_batch)
+    
     
 @dataclass
 class MelspecSample:
@@ -149,22 +138,16 @@ class MelspecSample:
       return self._melspec
     
     return read_melspec(self.melspec_path)
-
-class ParallelMelspecDataset(Dataset):
+  
+  
+class ParallelDatasetFactory:
   def __init__(self, 
                melspec_dir: str, 
                transcript_dir: str, 
                speaker_properties_path: str,
-               min_samples_per_sentence: Optional[int] = 10,
-               sample_pairing = 'random',
                rng: Optional[np.random.Generator] = None
   ):
-    assert sample_pairing.lower() in ['random', 'rand', 'product', 'prod'], \
-      f"'{sample_pairing}' not a valid entry pairing mode. Choose 'random' or 'product'."
-    
     self.rng = rng if rng else np.random.default_rng(42)
-    self.sample_pairing = sample_pairing.lower()
-    self._cartprod_sample_pairs = None
     
     #=== Load Speaker Properties ===#
     speaker_properties = {}
@@ -187,9 +170,9 @@ class ParallelMelspecDataset(Dataset):
           "accent": accent
         }
     
-    #=== Create Dataset Entries ===#
+    #=== Create Dataset Samples ===#
     
-    # Dictionary linking sentences to dataset samples
+    self.samples = []
     self.transcript_dict = {}
     
     # Folder names of speakers used as speaker IDs
@@ -203,53 +186,84 @@ class ParallelMelspecDataset(Dataset):
         logger.warning(f"Speaker {speaker_id} not found in speaker properties object. Skipping samples of this speaker.")
         continue
         
-      for file_name in os.listdir(os.path.join(transcript_dir, speaker_id)):
+      for sample_idx, file_name in enumerate(os.listdir(os.path.join(transcript_dir, speaker_id))):
         transcript = ""
         
         transcript_path = os.path.join(transcript_dir, speaker_id, file_name)
         with open(transcript_path) as file:
           transcript = file.read().strip()
-          
-        if transcript not in self.transcript_dict:
-          # Init add new unique sentence
-          self.transcript_dict[transcript] = []
         
         melspec_path = transcript_path.replace(transcript_dir, melspec_dir).replace('.txt', '.h5')
+
+        sample = MelspecSample(file_name,
+                               speaker_id,
+                               melspec_path,
+                               transcript,
+                               props['age'],
+                               props['gender'],
+                               props['accent'])
+
+        self.samples.append(sample)
         
-        # Create new sample
-        sample = (MelspecSample(file_name,
-                                speaker_id,
-                                melspec_path,
-                                transcript,
-                                props['age'],
-                                props['gender'],
-                                props['accent']))
+        if transcript not in self.transcript_dict:
+          self.transcript_dict[transcript] = []
         
-        # Append with new sample
-        self.transcript_dict[transcript].append(sample)
+        self.transcript_dict[transcript].append(sample_idx)
         
-    # Remove all sentences with less samples than the specified lower bound
-    for sentence, samples in list(self.transcript_dict.items()):
-      if len(samples) < min_samples_per_sentence:
-        del(self.transcript_dict[sentence])
-    
-    # Restructure self.transcript_dict to have lists of sample indices as values per unique sentence.
-    # And store samples in a 1D list
-    self.samples = [None] * sum(map(len, self.transcript_dict.values()))
-    
-    sample_idx = 0
-    for sentence, samples in list(self.transcript_dict.items()):
-      n_samples = len(samples)
-      self.samples[sample_idx : sample_idx + n_samples] = samples
-      self.transcript_dict[sentence] = list(range(sample_idx, sample_idx + n_samples))
-      sample_idx += n_samples
-      
-      if n_samples != len(self.transcript_dict[sentence]):
-        raise ValueError(f"list size mismatch. Went from {n_samples} to {len(self.transcript_dict[sentence])}")
-      
     if np.concatenate(list(self.transcript_dict.values())).tolist() != list(range(len(self.samples))):
       raise ValueError(f"Enry indices do not line up. Sentenc dict indices:\n{np.array(self.transcript_dict.values())}\n" +\
                        f"Actual indices:\n{list(range(len(self.samples)))}")
+    
+  def train_test_split(self, min_transcript_samples: int = 3, train_set_threshold: int = 10, sample_pairing = 'product'):
+    if isinstance(sample_pairing, str):
+      sample_pairing = (sample_pairing, sample_pairing)
+    
+    for sp in sample_pairing:
+      assert sp.lower() in ['random', 'rand', 'product', 'prod'], \
+        f"'{sample_pairing}' not a valid sample pairing mode. Choose 'random' or 'product'."
+    
+    train_transcript_dict = {}
+    test_transcript_dict = {}
+    
+    for transcript, sample_idxs in self.transcript_dict.items():
+      if len(sample_idxs) < min_transcript_samples:
+        continue
+      
+      if len(sample_idxs) < train_set_threshold:
+        train_transcript_dict[transcript] = sample_idxs
+        
+      else:
+        test_transcript_dict[transcript] = sample_idxs
+        
+    train_set = ParallelMelspecDataset(self.samples, 
+                                       train_transcript_dict,
+                                       sample_pairing = sample_pairing[0],
+                                       rng = self.rng)
+    
+    test_set  = ParallelMelspecDataset(self.samples, 
+                                       test_transcript_dict,
+                                       sample_pairing = sample_pairing[1],
+                                       rng = self.rng)
+    
+    return train_set, test_set
+        
+
+class ParallelMelspecDataset(Dataset):
+  def __init__(self, 
+               samples: List[MelspecSample],
+               transcript_dict: Dict[str, List[int]],
+               sample_pairing = 'random',
+               rng: Optional[np.random.Generator] = None
+  ):
+    assert sample_pairing.lower() in ['random', 'rand', 'product', 'prod'], \
+      f"'{sample_pairing}' not a valid sample pairing mode. Choose 'random' or 'product'."
+    
+    self.rng = rng if rng else np.random.default_rng(42)
+    self.sample_pairing = sample_pairing.lower()
+    self._cartprod_sample_pairs = None
+    
+    self.samples = samples
+    self.transcript_dict = transcript_dict
   
   @property
   def cartprod_sample_pairs(self):
@@ -308,16 +322,15 @@ class ParallelMelspecDataset(Dataset):
     """
     [sample.preload_melspec() for sample in self.samples]
     
-  def export_test_set(self, proportion=0.2, sample_pairing = 'product'):
+  def train_test_split(self, proportion=0.2, sample_pairing = 'product'):
     assert sample_pairing.lower() in ['random', 'rand', 'product', 'prod'], \
       f"'{sample_pairing}' not a valid entry pairing mode. Choose 'random' or 'product'."
     
-    # Bypass init
-    test_set = ParallelMelspecDataset.__new__(ParallelMelspecDataset)
+    train_set = copy(self)
+    train_set.transcript_dict = {}
+    
+    test_set = copy(self)
     test_set.transcript_dict = {}
-    test_set.samples = self.samples
-    test_set.rng = self.rng
-    test_set._cartprod_sample_pairs = None
     test_set.sample_pairing = sample_pairing.lower()
     
     # "Uncache" the previously calculated entry pairs
@@ -327,10 +340,10 @@ class ParallelMelspecDataset(Dataset):
       n_train_samples = max(2, int(np.round(len(entry_idxs) * proportion)))
       test_idxs, train_idxs = np.split(self.rng.permutation(entry_idxs), [n_train_samples])
 
-      self.transcript_dict[transcript] = sorted(train_idxs)
+      train_set.transcript_dict[transcript] = sorted(train_idxs)
       test_set.transcript_dict[transcript] = sorted(test_idxs)
       
-    return test_set
+    return train_set, test_set
     
 
 if __name__ == "__main__":
@@ -346,11 +359,11 @@ if __name__ == "__main__":
 
     # Test split
     print(len(dataset))
-    test_set = dataset.export_test_set(sample_pairing='rand')
-    print(len(test_set), len(dataset))
-    print(len(test_set) + len(dataset))
+    train_set, test_set = dataset.train_test_split(sample_pairing='rand')
+    print(len(test_set), len(train_set))
+    print(len(test_set) + len(train_set))
     
-    train_idxs = np.concatenate(list(dataset.transcript_dict.values()))
+    train_idxs = np.concatenate(list(train_set.transcript_dict.values()))
     test_idxs  = np.concatenate(list(test_set.transcript_dict.values()))
     print(set(train_idxs) & set(test_idxs))
     print(len(set(train_idxs) | set(test_idxs)))

@@ -167,7 +167,7 @@ cython_debug/
 ##############
 
 # Everything in any log directory
-*/logs/*
+*/*logs/*
 
 # Large files
 */checkpoints/*

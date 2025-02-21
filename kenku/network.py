@@ -257,6 +257,7 @@ class KenkuTeacher(nn.Module):
     masked_mel_dim_loss = torch.mean(masked_elem_loss, 1)
     # Calculate mean over only non-masked frames.
     masked_mse_loss = torch.sum(masked_mel_dim_loss) / torch.sum(tgt_mask)
+    mse_loss = masked_mse_loss
     
     #=== Attention Loss ===#
     
@@ -280,7 +281,7 @@ class KenkuTeacher(nn.Module):
     
     pred_att_np = pred_att.detach().cpu().clone().numpy()
     
-    return masked_mse_loss, diag_att_loss, pred_att_np
+    return mse_loss, diag_att_loss, pred_att_np
 
 
 class KenkuStudent(nn.Module):
