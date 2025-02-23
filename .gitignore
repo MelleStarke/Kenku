@@ -172,6 +172,8 @@ cython_debug/
 # Large files
 */checkpoints/*
 */plots/*
+train/data/*
+train/runs/*
 
 # Temp/Test files
 data/test_scaler.py

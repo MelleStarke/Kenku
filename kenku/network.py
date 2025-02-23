@@ -193,7 +193,7 @@ class KenkuTeacher(nn.Module):
     return student
     
   
-  def calc_loss(self, src_mel, tgt_mel, src_mask, tgt_mask, src_props, tgt_props,
+  def calc_loss(self, src_mel, tgt_mel, src_mask, tgt_mask, src_info, tgt_info,
                 pos_weight = 1.0, gauss_width_da = 0.3, reduction_factor = 4):
     
     # TODO: Authors feed source mel into forward without appending zero frame,
@@ -244,7 +244,7 @@ class KenkuTeacher(nn.Module):
       
     # exit()
     
-    pred_mel_pe, pred_att = self(src_mel_pe, tgt_mel_pe, src_props, tgt_props)
+    pred_mel_pe, pred_att = self(src_mel_pe, tgt_mel_pe, src_info, tgt_info)
 
     #=== Masked MSE loss ===#
     
@@ -294,14 +294,15 @@ if __name__ == "__main__":
     
   from torch.utils.data import DataLoader
   import load
-  from load import ParallelMelspecDataset, collate_fn
+  from load import ParallelMelspecDataset, ParallelDatasetFactory, collate_fn
   
   torch.set_default_device("cuda:0")
   
-  dataset = ParallelMelspecDataset(melspec_dir = "../Data/processed/VCTK/melspec", 
+  factory = ParallelDatasetFactory(melspec_dir = "../Data/processed/VCTK/melspec", 
                                    transcript_dir = "../Data/processed/VCTK/transcript_standardized",
-                                   speaker_properties_path = "../Data/processed/VCTK/speaker_properties.csv",
-                                   min_samples_per_sentence = 10)
+                                   speaker_info_path = "../Data/processed/VCTK/speaker_info.csv")
+  
+  dataset = factory.get_dataset()
   
   loader = DataLoader(
     dataset, 
@@ -314,9 +315,10 @@ if __name__ == "__main__":
   )
   
   ch = 80
-  rf = 4
-  model = KenkuTeacher(ch * rf, ch * rf, ch * rf, ch * rf, 2, 2)
+  rf = 1
+  model = KenkuTeacher(ch * rf, ch * rf, ch * rf, ch * rf, 12, 11)
   
-  batch = next(iter(loader))
-  loss = model.calc_loss(*batch, reduction_factor=rf)
+  src_mel, tgt_mel, _, _, src_info, tgt_info = next(iter(loader))
+  _ = model(src_mel, tgt_mel, src_info, tgt_info)
+  # loss = model.calc_loss(*batch, reduction_factor=rf)
   

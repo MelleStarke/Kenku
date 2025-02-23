@@ -13,7 +13,7 @@ from pathlib import Path, PurePath
 
 from typing import List, Tuple, Optional, Union, Dict
 
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 
 from itertools import product
 
@@ -82,11 +82,12 @@ def collate_fn(batch):
       (Tensor, Tensor, Tensor, Tensor, List, List): 
           Tuple of batches of 1.) source melspecs,           2.) target melspecs, 
                               3.) source masks,              4.) target masks,
-                              5.) source speaker properties, 6.) target speaker properties.
+                              5.) source speaker info, 6.) target speaker info.
   """
   batch_size = len(batch)
   n_mels = len(batch[0][0])  # nr. of frequency features in mel-spectrogram
   
+  #=== Signal Length Equalization ===#
   src_sig_lengths = [sample[0].shape[1] for sample in batch]
   tgt_sig_lengths = [sample[1].shape[1] for sample in batch]
   
@@ -95,16 +96,9 @@ def collate_fn(batch):
   src_melspec_batch = torch.zeros((batch_size, n_mels, max_sig_len), dtype=torch.float32, device=device)
   tgt_melspec_batch = torch.zeros((batch_size, n_mels, max_sig_len), dtype=torch.float32, device=device)
   
+  #=== Mask Real vs. Padded Frames ===#
   src_mask_batch = torch.zeros_like(src_melspec_batch[:,0,:]).unsqueeze(1)
   tgt_mask_batch = torch.zeros_like(tgt_melspec_batch[:,0,:]).unsqueeze(1)
-  
-  # print(f"collate_fn devices:\n\tsrc_mel_batch: {src_melspec_batch.device}\n\ttgt_mel_batch: {tgt_melspec_batch.device}"
-  #                          f"\n\tsrc_mask_batch: {src_mask_batch.device}\n\tsrc_mask_batch: {src_mask_batch.device}")
-  
-  gender_str_to_int = {'f': 0, 'm': 1}
-  
-  src_props_batch   = [gender_str_to_int[sample[2]] for sample in batch]
-  tgt_props_batch   = [gender_str_to_int[sample[3]] for sample in batch]
   
   for i, (src_sig_len, tgt_sig_len, (src_melspec, tgt_melspec, _, _)) in enumerate(zip(src_sig_lengths, tgt_sig_lengths, batch)):
     src_melspec_batch[i, :, :src_sig_len] = torch.from_numpy(src_melspec)
@@ -112,10 +106,27 @@ def collate_fn(batch):
     
     src_mask_batch[i, :, :src_sig_len] = 1.0
     tgt_mask_batch[i, :, :tgt_sig_len] = 1.0
+    
+  #=== Speaker Info ===#
+  src_info_batch  = [sample[2] for sample in batch]
+  tgt_info_batch  = [sample[3] for sample in batch]
+  
+  # Turn list of tuples of age, gender, and accent into a tuple of 3 lists of age, gender, and accent
+  src_age_batch, src_gender_batch, src_accent_batch = tuple(map(list, zip(*src_info_batch)))
+  tgt_age_batch, tgt_gender_batch, tgt_accent_batch = tuple(map(list, zip(*tgt_info_batch)))
+
+  # TODO: make this prettier. A map of tensor casting over a zipped info batch and dtype should work.
+  src_info_batch = (torch.tensor(src_age_batch,    dtype=torch.float),
+                    torch.tensor(src_gender_batch, dtype=torch.float),
+                    torch.tensor(src_accent_batch, dtype=torch.int64))
+
+  tgt_info_batch = (torch.tensor(tgt_age_batch,    dtype=torch.float),
+                    torch.tensor(tgt_gender_batch, dtype=torch.float),
+                    torch.tensor(tgt_accent_batch, dtype=torch.int64))
 
   return (src_melspec_batch, tgt_melspec_batch, 
           src_mask_batch,    tgt_mask_batch, 
-          src_props_batch,   tgt_props_batch)
+          src_info_batch,    tgt_info_batch)
     
     
 @dataclass
@@ -140,35 +151,37 @@ class MelspecSample:
     return read_melspec(self.melspec_path)
   
   
-class ParallelDatasetFactory:
+class SpeakerInfoMixin:
+  def encode_age(self, age):
+    lowbound, hibound = self.age_bounds
+    age_range = hibound - lowbound
+    return (age - lowbound) / age_range
+  
+  def encode_gender(self, gender):
+    gender_to_int = {'m': 0,
+                     'f': 1}
+    return gender_to_int[gender]
+  
+  def encode_accent(self, accent):
+    accent_idx = self.all_accents.index(accent)
+    return accent_idx
+  
+
+class ParallelDatasetFactory(SpeakerInfoMixin):
   def __init__(self, 
                melspec_dir: str, 
                transcript_dir: str, 
-               speaker_properties_path: str,
+               speaker_info_path: str,
+               age_bounds = (10, 80),
                rng: Optional[np.random.Generator] = None
   ):
+    self.age_bounds = age_bounds
     self.rng = rng if rng else np.random.default_rng(42)
     
-    #=== Load Speaker Properties ===#
-    speaker_properties = {}
+    #=== Load Speaker Info ===#
     
-    with open(speaker_properties_path, "r") as file:
-      reader = DictReader(file, delimiter=",", skipinitialspace=True)
-      for row in reader:
-        speaker_id = row["ID"].strip().lower()  # Normalize speaker ID to lowercase
-        age = int(row["AGE"].strip()) if row["AGE"].strip().isdigit() else None
-        gender = row["GENDER"].strip().lower()
-        accent = row["ACCENT"].strip().lower()
-        
-        if age is None:
-          logger.warning(f"Age of speaker {speaker_id} in {speaker_properties_path} parsed as None. Skipping sample.")
-          continue
-        
-        speaker_properties[speaker_id] = {
-          "age": age,
-          "gender": gender,
-          "accent": accent
-        }
+    speaker_info  = self.read_speaker_info(speaker_info_path)
+    self.all_accents = np.unique([speaker['accent'] for speaker in speaker_info.values()]).tolist()
     
     #=== Create Dataset Samples ===#
     
@@ -181,12 +194,12 @@ class ParallelDatasetFactory:
     
     for speaker_id in speaker_ids:
       try:
-        props = speaker_properties[speaker_id]
+        info = speaker_info[speaker_id]
       except KeyError:
-        logger.warning(f"Speaker {speaker_id} not found in speaker properties object. Skipping samples of this speaker.")
+        logger.warning(f"Speaker {speaker_id} not found in speaker info object. Skipping samples of this speaker.")
         continue
         
-      for sample_idx, file_name in enumerate(os.listdir(os.path.join(transcript_dir, speaker_id))):
+      for file_name in os.listdir(os.path.join(transcript_dir, speaker_id)):
         transcript = ""
         
         transcript_path = os.path.join(transcript_dir, speaker_id, file_name)
@@ -199,21 +212,45 @@ class ParallelDatasetFactory:
                                speaker_id,
                                melspec_path,
                                transcript,
-                               props['age'],
-                               props['gender'],
-                               props['accent'])
+                               info['age'],
+                               info['gender'],
+                               info['accent'])
 
         self.samples.append(sample)
         
         if transcript not in self.transcript_dict:
           self.transcript_dict[transcript] = []
         
-        self.transcript_dict[transcript].append(sample_idx)
+        latest_sample_idx = len(self.samples) - 1
+        self.transcript_dict[transcript].append(latest_sample_idx)
         
-    if np.concatenate(list(self.transcript_dict.values())).tolist() != list(range(len(self.samples))):
-      raise ValueError(f"Enry indices do not line up. Sentenc dict indices:\n{np.array(self.transcript_dict.values())}\n" +\
+    if sorted(np.concatenate(list(self.transcript_dict.values())).tolist()) != sorted(list(range(len(self.samples)))):
+      raise ValueError(f"Enry indices do not line up. Sentence dict indices:\n{np.concatenate(list(self.transcript_dict.values()))}\n" +\
                        f"Actual indices:\n{list(range(len(self.samples)))}")
     
+  def read_speaker_info(self, speaker_info_path):
+    speaker_info = {}
+    
+    with open(speaker_info_path, "r") as file:
+      reader = DictReader(file, delimiter=",", skipinitialspace=True)
+      for row in reader:
+        speaker_id = row["ID"].strip().lower()  # Normalize speaker ID to lowercase
+        age = int(row["AGE"].strip()) if row["AGE"].strip().isdigit() else None
+        gender = row["GENDER"].strip().lower()
+        accent = row["ACCENT"].strip().lower()
+        
+        if age is None:
+          logger.warning(f"Age of speaker {speaker_id} in {speaker_info_path} parsed as None. Skipping sample.")
+          continue
+        
+        speaker_info[speaker_id] = {
+          "age": age,
+          "gender": gender,
+          "accent": accent
+        }
+        
+    return speaker_info
+  
   def train_test_split(self, min_transcript_samples: int = 3, train_set_threshold: int = 10, sample_pairing = 'product'):
     if isinstance(sample_pairing, str):
       sample_pairing = (sample_pairing, sample_pairing)
@@ -238,26 +275,55 @@ class ParallelDatasetFactory:
     train_set = ParallelMelspecDataset(self.samples, 
                                        train_transcript_dict,
                                        sample_pairing = sample_pairing[0],
+                                       age_bounds = self.age_bounds,
+                                       all_accents = self.all_accents,
                                        rng = self.rng)
     
     test_set  = ParallelMelspecDataset(self.samples, 
                                        test_transcript_dict,
                                        sample_pairing = sample_pairing[1],
+                                       age_bounds = self.age_bounds,
+                                       all_accents = self.all_accents,
                                        rng = self.rng)
     
     return train_set, test_set
+  
+  def get_dataset(self, min_transcript_samples = 10, sample_pairing = 'product'):
+    assert sample_pairing.lower() in ['random', 'rand', 'product', 'prod'], \
+      f"'{sample_pairing}' not a valid sample pairing mode. Choose 'random' or 'product'."
+      
+    new_transcript_dict = {}
+    
+    for transcript, sample_idxs in self.transcript_dict.items():
+      if len(sample_idxs) >= min_transcript_samples:
+        new_transcript_dict[transcript] = sample_idxs
+    
+    dataset = ParallelMelspecDataset(self.samples,
+                                     new_transcript_dict, 
+                                     sample_pairing = sample_pairing, 
+                                     age_bounds = self.age_bounds,
+                                     all_accents = self.all_accents,
+                                     rng = self.rng)
+    return dataset
         
 
-class ParallelMelspecDataset(Dataset):
+class ParallelMelspecDataset(Dataset, SpeakerInfoMixin):
   def __init__(self, 
                samples: List[MelspecSample],
                transcript_dict: Dict[str, List[int]],
+               age_bounds = (10, 80),
+               all_accents = None,
                sample_pairing = 'random',
                rng: Optional[np.random.Generator] = None
   ):
     assert sample_pairing.lower() in ['random', 'rand', 'product', 'prod'], \
       f"'{sample_pairing}' not a valid sample pairing mode. Choose 'random' or 'product'."
     
+    if accents is None:
+      logger.error("List of accents isn't initialized. Accent encoding won't work.")
+    
+    self.age_bounds = age_bounds
+    self.all_accents = all_accents
     self.rng = rng if rng else np.random.default_rng(42)
     self.sample_pairing = sample_pairing.lower()
     self._cartprod_sample_pairs = None
@@ -287,11 +353,18 @@ class ParallelMelspecDataset(Dataset):
       src_candidate_idxs = self.transcript_dict[tgt_sample.transcript]
       src_idx = self.rng.choice(src_candidate_idxs)
       src_sample = self.samples[src_idx]
+      
+    src_info = (self.encode_age(src_sample.age),
+                self.encode_gender(src_sample.gender),
+                self.encode_accent(src_sample.accent))
+    tgt_info = (self.encode_age(tgt_sample.age),
+                self.encode_gender(tgt_sample.gender),
+                self.encode_accent(tgt_sample.accent))
     
     return (src_sample.melspec,
             tgt_sample.melspec,
-            src_sample.gender,
-            tgt_sample.gender)
+            src_info,
+            tgt_info)
     
   def __getitems__(self, idxs):
     if torch.is_tensor(idxs):
@@ -299,16 +372,6 @@ class ParallelMelspecDataset(Dataset):
     
     return [self[idx] for idx in idxs]
   
-  # def class_value_to_id(self, property, value):
-  #   assert property.lower() in ['age', 'gender', 'accent'], \
-  #     "Incorrect value for arg 'property', must be one of 'id, 'age', or 'gender'."
-    
-  #   self.class_ids[property](value)
-  
-  # def class_id_to_value(self, property, id):
-  #   assert property.lower() in ['age', 'gender', 'accent'], \
-  #     "Incorrect value for arg 'property', must be one of 'id, 'age', or 'gender'."
-
   def __len__(self):
     if self.sample_pairing in ['product', 'prod']:
       return sum(map(lambda idx_list: len(idx_list) ** 2, self.transcript_dict.values()))
@@ -348,15 +411,24 @@ class ParallelMelspecDataset(Dataset):
 
 if __name__ == "__main__":
   
-  print(current_file_dir)
+  mode = ['basic',
+          'validation',
+          'distribution']
+
+  factory = ParallelDatasetFactory(melspec_dir = "../Data/processed/VCTK/melspec", 
+                                    transcript_dir = "../Data/processed/VCTK/transcript_standardized",
+                                    speaker_info_path = "../Data/processed/VCTK/speaker_info.csv")
   
+  dataset = factory.get_dataset()
+  
+  loader = DataLoader(dataset, batch_size = 8, shuffle = True, collate_fn = collate_fn)
+    
   # Regular data loading
-  if True:
-    dataset = ParallelMelspecDataset(melspec_dir = "../Data/processed/VCTK/melspec", 
-                                     transcript_dir = "../Data/processed/VCTK/transcript_standardized",
-                                     speaker_properties_path = "../Data/processed/VCTK/speaker_properties.csv")
+  if mode == 'basic':
+    pass
 
-
+  #=== Test/Validation Split ===#
+  if mode == 'validation':
     # Test split
     print(len(dataset))
     train_set, test_set = dataset.train_test_split(sample_pairing='rand')
@@ -369,11 +441,11 @@ if __name__ == "__main__":
     print(len(set(train_idxs) | set(test_idxs)))
   
   # Sentence sample distribution
-  if False:
+  if mode == 'distribution':
     dataset = ParallelMelspecDataset(melspec_dir = "../Data/processed/VCTK/melspec", 
-                                     transcript_dir = "../Data/processed/VCTK/transcript_standardized",
-                                     speaker_properties_path = "../Data/processed/VCTK/speaker_properties.csv",
-                                     min_samples_per_sentence = 10)
+                                      transcript_dir = "../Data/processed/VCTK/transcript_standardized",
+                                      speaker_info_path = "../Data/processed/VCTK/speaker_info.csv",
+                                      min_samples_per_sentence = 10)
 
     # print(ds.class_dirs)
     # print([len(d) for d in ds.filenames])

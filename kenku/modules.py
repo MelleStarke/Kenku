@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 
 from torch import Tensor
+from torch.nn import functional as F
 from torch.nn.utils.parametrizations import weight_norm
 from typing import List, Tuple, Union, Optional
 
@@ -22,6 +23,58 @@ def concat_embedding(emb, X):
   """
   return torch.cat((emb, X), dim=1)
 
+
+class KameEmbedding(nn.Module):
+  def __init__(self, n_accents, n_channels):
+    super(KameEmbedding, self).__init__()
+    
+    self.layer = nn.Linear(n_accents + 2, n_channels).to(device)
+    
+  def forward(self, ages, genders, accents):
+    batch_size = len(ages)
+    
+    assert batch_size == len(genders) == len(accents), \
+      "Batch size mismatch between age, gender, and accent vector \n" +\
+     f"{(len(age), len(gender), len(accent))}"
+     
+    ages       = ages.unsqueeze(-1)
+    genders    = genders.unsqueeze(-1)
+    accents_oh = F.one_hot(accents, dtype=torch.float)
+    
+    encoded_speaker_info = torch.cat([ages, genders, accents_oh], dim=1).to(device)
+    return self.layer(encoded_speaker_info)
+    
+  def __vectorize_age_pe(self, age: Union[List[int], Tensor, int]):
+    """vectorizes age through position encoding.
+
+    Args:
+        age (List[int] or Tensor[int], or int): age
+    """
+    if not torch.is_tensor(age):
+      age = torch.tensor(age, dtype=torch.float, device=device)
+    
+    # Ensure tensor of (batch_size, 1) even if age is a single value
+    while age.ndim < 2:
+      age = age.unsqueeze(-1)
+        
+    n_waves = self.age_dim // 2
+    age_lowbound, age_hibound = self.age_bounds
+    age_range = age_hibound - age_lowbound
+   
+    # List of multiples of pi from 0.5pi to 2pi, exponentially distributed.
+    # Ex: if n_waves = 3, then wave_freqs = [0.5pi, 1pi, 2pi]
+    wave_freqs = 2 ** torch.linspace(-1, 1, n_waves, dtype=torch.float) * torch.pi
+    wave_freqs = wave_freqs.unsqueeze(0).to(device)
+    # x-scaled and x-shifted sin/cos inputs to match the age bounds.
+    sincos_inputs = wave_freqs * (age - age_lowbound) / age_range
+    
+    sin_age_encoding = torch.sin(sincos_inputs)
+    cos_age_encoding = torch.cos(sincos_inputs)
+    
+    age_encoding = torch.cat([sin_age_encoding, cos_age_encoding], dim = 1)
+    
+    return age_encoding
+    
     
 class KameBlock(nn.Module):
   def __init__(self,
@@ -74,8 +127,10 @@ class KameBlock(nn.Module):
     
     #=== Layers ===#
     self.dropout     = nn.Dropout(p=dropout_rate)
-    self.embed_layer = nn.Embedding(num_classes, embed_ch).to(device)  # Embedding of class values into class feature space.
-                                                                       # TODO: original src code has weight norm commented out. Give a try?
+    # self.embed_layer = nn.Embedding(num_classes, embed_ch).to(device)  # Embedding of class values into class feature space.
+    #                                                                    # TODO: original src code has weight norm commented out. Give a try?
+    
+    self.embed_layer = KameEmbedding(embed_ch)
     
     # Use 1D Conv layer as linear layer to match up shapes better.
     self.in_layer = weight_norm(nn.Conv1d(in_channels  = in_ch + embed_ch,
@@ -97,17 +152,16 @@ class KameBlock(nn.Module):
                                            padding      = 0,
                                            device       = device))
   
-  def forward(self, X: Tensor, class_id: Union[int, List[int]]):
+  def forward(self, X: Tensor, speaker_info: Tuple[List[int], List[str], List[str]]):
     batch_size, in_ch, timesteps = X.shape
     
-    # Check if class_id is a scalar instead of a vector
-    if np.shape(class_id) == ():
-      class_id = [class_id]
+    # # Take class id list, add empty dim with unsqueeze, broadcast over timesteps.
+    # # Prepration for embedding layer pass and appending to input.
+    # class_tensor = torch.tensor(class_id, dtype=torch.int32).unsqueeze(1).to(device).repeat(1, timesteps)
+    # embedding    = self.embed_layer(class_tensor).permute(0, 2, 1)
     
-    # Take class id list, add empty dim with unsqueeze, broadcast over timesteps.
-    # Prepration for embedding layer pass and appending to input.
-    class_tensor = torch.tensor(class_id, dtype=torch.int32).unsqueeze(1).to(device).repeat(1, timesteps)
-    embedding    = self.embed_layer(class_tensor).permute(0, 2, 1)
+    age, gender, accent = speaker_info
+    embedding = self.embed_layer(age, gender, accent).unsqueeze(-1).repeat(1, 1, timesteps)
     
     #=== Forward Pass ===#
     X_    = self.dropout(X)
@@ -216,10 +270,23 @@ if __name__ == "__main__":
   num_classes = 4
   timesteps   = 128
   
+  accents = ['English', 'Scottish', 'NorthernIrish', 'Irish', 'Indian', 'Welsh', 'American', 'Canadian', 'SouthAfrican', 'Australian', 'NewZealand']
   
+  age_batch = np.random.randint(10, 80, 4).tolist()
+  gender_batch = np.random.choice(['m','f'], 4).tolist()
+  accent_batch = np.random.choice(accents, 4).tolist()
   
-  kb = KameBlock(in_ch, conv_ch, out_ch, embed_ch, num_classes)
-  X = torch.rand(batch_size, in_ch, timesteps, device=device)
-  Y = kb(X, [0] * 16)
-  print(Y)
-  print(Y.shape)
+  [print(batch) for batch in [age_batch, gender_batch, accent_batch]]
+  
+  emb = KameEmbedding(6)
+  
+  e = emb(age_batch, gender_batch, accent_batch)
+  
+  print(e)
+  print(e.shape)
+  
+  # kb = KameBlock(in_ch, conv_ch, out_ch, embed_ch, num_classes)
+  # X = torch.rand(batch_size, in_ch, timesteps, device=device)
+  # Y = kb(X, [0] * 16)
+  # print(Y)
+  # print(Y.shape)
