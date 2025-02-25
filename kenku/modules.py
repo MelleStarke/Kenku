@@ -82,7 +82,7 @@ class KameBlock(nn.Module):
                conv_ch: int,
                out_ch: int,
                embed_ch: int,
-               num_classes: int,
+               num_accents: int,
                num_conv_layers: Optional[int] = 8,
                kernel_size: Optional[int] = 5,
                num_output_streams: Optional[int] = 1,
@@ -103,7 +103,7 @@ class KameBlock(nn.Module):
         conv_ch (int): nr. of convolutional channels (uniform across conv layers)
         out_ch (int): nr. of features in the output signal
         embed_ch (int): nr. of features used to embed classes
-        num_classes (int): nr. of classes
+        num_accents (int): nr. of classes
         num_layers (int, optional): nr. of convolutional layers. Defaults to 8.
         kernel_size (int, optional): kernel size. Defaults to 5.
         num_output_streams (int, optional): nr of output streams. Multiplies the out_ch by this factor.
@@ -127,7 +127,7 @@ class KameBlock(nn.Module):
     
     #=== Layers ===#
     self.dropout     = nn.Dropout(p=dropout_rate)
-    # self.embed_layer = nn.Embedding(num_classes, embed_ch).to(device)  # Embedding of class values into class feature space.
+    # self.embed_layer = nn.Embedding(num_accents, embed_ch).to(device)  # Embedding of class values into class feature space.
     #                                                                    # TODO: original src code has weight norm commented out. Give a try?
     
     self.embed_layer = KameEmbedding(embed_ch)
@@ -267,7 +267,7 @@ if __name__ == "__main__":
   conv_ch     = 6
   out_ch      = 3
   embed_ch    = 2
-  num_classes = 4
+  num_accents = 4
   timesteps   = 128
   
   accents = ['English', 'Scottish', 'NorthernIrish', 'Irish', 'Indian', 'Welsh', 'American', 'Canadian', 'SouthAfrican', 'Australian', 'NewZealand']
@@ -285,7 +285,7 @@ if __name__ == "__main__":
   print(e)
   print(e.shape)
   
-  # kb = KameBlock(in_ch, conv_ch, out_ch, embed_ch, num_classes)
+  # kb = KameBlock(in_ch, conv_ch, out_ch, embed_ch, num_accents)
   # X = torch.rand(batch_size, in_ch, timesteps, device=device)
   # Y = kb(X, [0] * 16)
   # print(Y)

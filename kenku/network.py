@@ -46,26 +46,26 @@ def append_zero_frame(X, n_frames=1):
   zero_tensor = torch.zeros((batch_size, n_mels, n_frames), dtype=X.dtype, device=X.device)
   return torch.cat((X, zero_tensor), dim=2)
 
-def stack_frames(X, reduction_factor):
-  rf = reduction_factor
+def stack_frames(X, stack_factor):
+  sf = stack_factor
   batch_size, n_mels, n_frames = X.shape
   
-  # How many extra empty frames we need for n_frames to be a multiple of reduction_factor.
+  # How many extra empty frames we need for n_frames to be a multiple of stack_factor.
   # Such that we can reduce n_frames and multiply n_mels by this factor.
-  n_frames_short = -n_frames % rf
+  n_frames_short = -n_frames % sf
   
   if n_frames_short > 0:
     X = append_zero_frame(X, n_frames=n_frames_short)
   
   n_frames += n_frames_short
-  X = X.permute(0,2,1).reshape(batch_size, n_frames // rf, n_mels * rf).permute(0,2,1)
+  X = X.permute(0,2,1).reshape(batch_size, n_frames // sf, n_mels * sf).permute(0,2,1)
   return X
 
-def unstack_frames(X, reduction_factor):
-  rf = reduction_factor
+def unstack_frames(X, stack_factor):
+  sf = stack_factor
   batch_size, n_mels, n_frames = X.shape
   
-  X = X.permute(0,2,1).reshape(batch_size, n_frames * rf, n_mels // rf).permute(0,2,1)
+  X = X.permute(0,2,1).reshape(batch_size, n_frames * sf, n_mels // sf).permute(0,2,1)
   return X
 
 def position_encoding(length, n_units):
@@ -118,7 +118,7 @@ class KenkuTeacher(nn.Module):
                att_ch: int,
                out_ch: int,
                embed_ch: int,
-               num_classes: int,
+               num_accents: int,
                num_conv_layers: Optional[int] = 8,
                kernel_size: Optional[int] = 5,
                dilations: Optional[List[int]] = None,
@@ -126,7 +126,7 @@ class KenkuTeacher(nn.Module):
     ):
     super(KenkuTeacher, self).__init__()
       
-    self.init_args = (in_ch, conv_ch, att_ch, out_ch, embed_ch, num_classes)
+    self.init_args = (in_ch, conv_ch, att_ch, out_ch, embed_ch, num_accents)
     self.init_kwargs = {
       'num_conv_layers': num_conv_layers,
       'kernel_size': kernel_size,
@@ -135,15 +135,15 @@ class KenkuTeacher(nn.Module):
     }
     
     self.encoder = KameBlock(
-      in_ch, conv_ch, att_ch, embed_ch, num_classes, num_output_streams=2, **self.init_kwargs
+      in_ch, conv_ch, att_ch, embed_ch, num_accents, num_output_streams=2, **self.init_kwargs
     ) 
     self.pre_decoder = KameBlock(
-      in_ch, conv_ch, att_ch, embed_ch, num_classes, **self.init_kwargs
+      in_ch, conv_ch, att_ch, embed_ch, num_accents, **self.init_kwargs
     )
     self.attention = Attention()
     
     self.post_decoder = KameBlock(
-      att_ch, conv_ch, out_ch, embed_ch, num_classes, **self.init_kwargs
+      att_ch, conv_ch, out_ch, embed_ch, num_accents, **self.init_kwargs
     )
     
     self.main_loss_fn = torch.nn.MSELoss()
@@ -194,7 +194,7 @@ class KenkuTeacher(nn.Module):
     
   
   def calc_loss(self, src_mel, tgt_mel, src_mask, tgt_mask, src_info, tgt_info,
-                pos_weight = 1.0, gauss_width_da = 0.3, reduction_factor = 4):
+                pos_weight = 1.0, gauss_width_da = 0.3, stack_factor = 4):
     
     # TODO: Authors feed source mel into forward without appending zero frame,
     #       despite prepending target zero frame. This supposedly doesn't throw an error?
@@ -202,15 +202,15 @@ class KenkuTeacher(nn.Module):
     device = src_mel.device
     dtype  = src_mel.dtype
     
-    rf = reduction_factor
+    sf = stack_factor
     
     # Stack frames along the mel-dimension, thereby reducing the frame-dimension.
-    if reduction_factor > 1:
-      src_mel  = stack_frames(src_mel, reduction_factor)
-      tgt_mel  = stack_frames(tgt_mel, reduction_factor)
+    if stack_factor > 1:
+      src_mel  = stack_frames(src_mel, stack_factor)
+      tgt_mel  = stack_frames(tgt_mel, stack_factor)
       
-      src_mask = src_mask[:,:,::rf]
-      tgt_mask = tgt_mask[:,:,::rf]
+      src_mask = src_mask[:,:,::sf]
+      tgt_mask = tgt_mask[:,:,::sf]
       
     tgt_mel = prepend_zero_frame(tgt_mel)
     src_mel = append_zero_frame(src_mel) 
@@ -315,10 +315,10 @@ if __name__ == "__main__":
   )
   
   ch = 80
-  rf = 1
-  model = KenkuTeacher(ch * rf, ch * rf, ch * rf, ch * rf, 12, 11)
+  sf = 1
+  model = KenkuTeacher(ch * sf, ch * sf, ch * sf, ch * sf, 12, 11)
   
   src_mel, tgt_mel, _, _, src_info, tgt_info = next(iter(loader))
   _ = model(src_mel, tgt_mel, src_info, tgt_info)
-  # loss = model.calc_loss(*batch, reduction_factor=rf)
+  # loss = model.calc_loss(*batch, stack_factor=sf)
   
