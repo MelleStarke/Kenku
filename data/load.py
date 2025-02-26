@@ -17,8 +17,6 @@ from torch.utils.data import Dataset, DataLoader
 
 from itertools import product
 
-from __init__ import *
-
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 
@@ -169,14 +167,16 @@ class SpeakerInfoMixin:
 
 class ParallelDatasetFactory(SpeakerInfoMixin):
   def __init__(self, 
-               melspec_dir: str, 
-               transcript_dir: str, 
-               speaker_info_path: str,
+               dataset_dir: str = '../Data/processed/VCTK/',
                age_bounds = (10, 80),
                rng: Optional[np.random.Generator] = None
   ):
     self.age_bounds = age_bounds
     self.rng = rng if rng else np.random.default_rng(42)
+    
+    melspec_dir       = os.path.join(dataset_dir, 'melspec')
+    transcript_dir    = os.path.join(dataset_dir, 'transcript')
+    speaker_info_path = os.path.join(dataset_dir, 'speaker_info.csv')
     
     #=== Load Speaker Info ===#
     
@@ -319,7 +319,7 @@ class ParallelMelspecDataset(Dataset, SpeakerInfoMixin):
     assert sample_pairing.lower() in ['random', 'rand', 'product', 'prod'], \
       f"'{sample_pairing}' not a valid sample pairing mode. Choose 'random' or 'product'."
     
-    if accents is None:
+    if all_accents is None:
       logger.error("List of accents isn't initialized. Accent encoding won't work.")
     
     self.age_bounds = age_bounds
@@ -413,11 +413,9 @@ if __name__ == "__main__":
   
   mode = ['basic',
           'validation',
-          'distribution']
+          'distribution'][2]
 
-  factory = ParallelDatasetFactory(melspec_dir = "../Data/processed/VCTK/melspec", 
-                                    transcript_dir = "../Data/processed/VCTK/transcript_standardized",
-                                    speaker_info_path = "../Data/processed/VCTK/speaker_info.csv")
+  factory = ParallelDatasetFactory(dataset_dir = "../Data/processed/VCTK")
   
   dataset = factory.get_dataset()
   
@@ -442,17 +440,11 @@ if __name__ == "__main__":
   
   # Sentence sample distribution
   if mode == 'distribution':
-    dataset = ParallelMelspecDataset(melspec_dir = "../Data/processed/VCTK/melspec", 
-                                      transcript_dir = "../Data/processed/VCTK/transcript_standardized",
-                                      speaker_info_path = "../Data/processed/VCTK/speaker_info.csv",
-                                      min_samples_per_sentence = 10)
-
+    factory = ParallelDatasetFactory(dataset_dir = "../Data/processed/VCTK")
+    dataset = factory.get_dataset()
     # print(ds.class_dirs)
     # print([len(d) for d in ds.filenames])
     
-    print(dataset[0:2])
-    
-    exit()
     
     plt.bar(range(len(dataset.transcript_dict)), sorted([len(d) for d in dataset.transcript_dict.values()]))
     plt.ylabel("N sentence samples")

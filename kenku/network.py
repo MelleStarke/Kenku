@@ -7,7 +7,9 @@ from torch import Tensor
 from torch.nn.utils.parametrizations import weight_norm
 from typing import List, Tuple, Union, Optional
 
-from modules import KameBlock, Attention
+from kenku.modules import KameBlock, Attention
+
+from data.load import ParallelMelspecDataset, ParallelDatasetFactory, collate_fn
 
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -288,21 +290,13 @@ class KenkuStudent(nn.Module):
 
 
 if __name__ == "__main__":
-  import os
-  import sys
-  sys.path.append(os.path.abspath("data"))
-    
   from torch.utils.data import DataLoader
-  import load
-  from load import ParallelMelspecDataset, ParallelDatasetFactory, collate_fn
   
   torch.set_default_device("cuda:0")
   
-  factory = ParallelDatasetFactory(melspec_dir = "../Data/processed/VCTK/melspec", 
-                                   transcript_dir = "../Data/processed/VCTK/transcript_standardized",
-                                   speaker_info_path = "../Data/processed/VCTK/speaker_info.csv")
+  factory = ParallelDatasetFactory(dataset_dir = "../Data/processed/VCTK")
   
-  dataset = factory.get_dataset()
+  dataset = factory.get_dataset(min_transcript_samples=100)
   
   loader = DataLoader(
     dataset, 
@@ -320,5 +314,6 @@ if __name__ == "__main__":
   
   src_mel, tgt_mel, _, _, src_info, tgt_info = next(iter(loader))
   _ = model(src_mel, tgt_mel, src_info, tgt_info)
+  print(_[0].shape)
   # loss = model.calc_loss(*batch, stack_factor=sf)
   

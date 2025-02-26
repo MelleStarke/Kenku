@@ -19,10 +19,7 @@ from tqdm import tqdm
 from sklearn.base import BaseEstimator
 from sklearn.preprocessing import StandardScaler
 
-# Local directory imports
-from __init__ import *
-from load import read_melspec
-
+from .load import read_melspec
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -68,7 +65,7 @@ normalization_logger.addHandler(norm_logfile_handler)
 ### Format Conversion ###  
 #########################
 
-def audio_file_to_melspec(src_filepath: str, dst_filepath: str, overwrite = True, config: dict = None):
+def audio_file_to_melspec(src_filepath: str, dst_filepath: str, config: dict, overwrite = True):
   """
   Extract a mel-spectrogram from a single audio file and save it to an HDF5 file.
 
@@ -99,8 +96,6 @@ def audio_file_to_melspec(src_filepath: str, dst_filepath: str, overwrite = True
   if not overwrite and os.path.exists(dst_filepath):
     logger.info(f"File {dst_filepath} already exists. Skipping.")
     return
-  
-  config = DEFAULT_CONFIG if config is None else config
   
   try:
     # warnings.filterwarnings('ignore')
@@ -275,13 +270,13 @@ def main():
     """
     parser = argparse.ArgumentParser()
     parser.add_argument('--src', type=str,
-                        default=RAW_VCTK_AUDIO_PATH,
+                        default='../Data/raw/VCTK-Corpus/wav48',
                         help='Source directory containing input audio files.')
-    parser.add_argument('--dst', type=str, default=VCTK_MELSPEC_PATH,
+    parser.add_argument('--dst', type=str, default='../Data/processed/VCTK/melspec',
                         help='Destination directory for extracted features.')
     parser.add_argument('--ext', type=str, default='.wav',
                         help='File extension for input audio files (e.g. .wav).')
-    parser.add_argument('--conf', type=str, default=os.path.join(VCTK_PATH, 'data_config.json'),
+    parser.add_argument('--conf', type=str, default='../Data/processed/VCTK/data_config.json',
                         help='Path to a JSON file where the data configuration will be saved.\n')
     
     parser.add_argument('--calc-norm', action="store_true", 
@@ -313,9 +308,6 @@ def main():
     
     convert = not args.no_convert
     
-    # Torch device setting
-    device = get_torch_device()
-    
 
     #=== Data Conversion ===#
     
@@ -338,7 +330,7 @@ def main():
         os.makedirs(os.path.dirname(configpath))
       
       # Warn the user if trying to keep melspec data made with a different config.
-      elif not overwrite and not same_config(data_config, configpath):
+      elif not overwrite and not data_config == load_config(configpath):
         logger.warning("Keeping old melspecs despite configs not matching.\n" +\
                       f"\tOld config:\n{dict(sorted(load_config(configpath).items()))}\n\n" +\
                       f"\tNew config:\n{dict(sorted(data_config.items()))}\n")
@@ -350,13 +342,13 @@ def main():
           [
               f,
               f.replace(src_dir, dest_dir).replace(extension, ".h5"),
+              data_config
           ]
           for f in walk_files(src_dir, extension)
       ]
       
       convert_kwargs = {
-        'overwrite': overwrite,
-        'config'   : data_config,
+        'overwrite': overwrite
       }
 
       print('Converting audio files to mel-spectrograms...')
@@ -421,7 +413,8 @@ def main():
       )
 
       # Record that the data have been normalized in the data_config.json file
-      merge_config({'normalized': True}, configpath)
+      merged_config = merge_config({'normalized': True}, load_config(configpath))
+      save_config(merged_config, configpath)
       
 
 if __name__ == '__main__':

@@ -5,11 +5,6 @@ from localspelling import convert_spelling
 
 from tqdm import tqdm
 
-from __init__ import *
-
-
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
 
 def standardize_text(text: str):
   """
@@ -27,7 +22,7 @@ def standardize_text(text: str):
   # Remove trailing parenthesis or extra symbols
   text = re.sub(r"\s*\)+$", "", text)
 
-  # Ensure no spaces before punctuation (e.g., ". ", "? ")
+  # Ensure no spaces before punctuation (e.g., " .", " ?")
   text = re.sub(r"\s+([.,!?])", r"\1", text)
 
   # Remove double quotes and fancy quotes
@@ -42,8 +37,11 @@ def standardize_text(text: str):
   # Convert British to American spelling
   text = convert_spelling(text, 'us')
   
-  # Capitalize leading character
-  text = text[0].capitalize() + text[1:] if text else text
+  # # Capitalize leading character
+  # text = text[0].capitalize() + text[1:] if text else text
+
+  # All lowercase
+  text = text.lower()
 
   return text
 
@@ -73,13 +71,14 @@ def process_transcripts(input_dir, output_dir):
         standardized_text = standardize_text(text)
 
         with open(output_path, "w", encoding="utf-8") as f:
-          f.write(standardized_text)
+          # f.write(standardized_text)
+          print(standardized_text)
 
         # print(f"Processed: {text} -> {standardized_text}")
 
 
 if __name__ == "__main__":
-  input_directory = os.path.join(VCTK_PATH, "transcript")
-  output_directory = os.path.join(VCTK_PATH, "transcript_standardized")
+  input_directory = "../Data/raw/VCTK-Corpus/txt"
+  output_directory = "../Data/processed/VCTK/transcript"
 
   process_transcripts(input_directory, output_directory)

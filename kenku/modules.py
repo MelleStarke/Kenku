@@ -28,6 +28,7 @@ class KameEmbedding(nn.Module):
   def __init__(self, n_accents, n_channels):
     super(KameEmbedding, self).__init__()
     
+    self.n_accents = n_accents
     self.layer = nn.Linear(n_accents + 2, n_channels).to(device)
     
   def forward(self, ages, genders, accents):
@@ -39,7 +40,7 @@ class KameEmbedding(nn.Module):
      
     ages       = ages.unsqueeze(-1)
     genders    = genders.unsqueeze(-1)
-    accents_oh = F.one_hot(accents, dtype=torch.float)
+    accents_oh = F.one_hot(accents, num_classes=self.n_accents).to(dtype=torch.float)
     
     encoded_speaker_info = torch.cat([ages, genders, accents_oh], dim=1).to(device)
     return self.layer(encoded_speaker_info)
@@ -130,7 +131,7 @@ class KameBlock(nn.Module):
     # self.embed_layer = nn.Embedding(num_accents, embed_ch).to(device)  # Embedding of class values into class feature space.
     #                                                                    # TODO: original src code has weight norm commented out. Give a try?
     
-    self.embed_layer = KameEmbedding(embed_ch)
+    self.embed_layer = KameEmbedding(num_accents, embed_ch)
     
     # Use 1D Conv layer as linear layer to match up shapes better.
     self.in_layer = weight_norm(nn.Conv1d(in_channels  = in_ch + embed_ch,
@@ -259,6 +260,10 @@ class Attention(nn.Module):
     A = nn.functional.softmax(torch.matmul(K.permute(0,2,1), Q)/np.sqrt(K.shape[1]), dim=1)
     R = torch.matmul(V,A)
     return R, A
+  
+
+class AttentionPredictor(nn.Module):
+  pass
     
 
 if __name__ == "__main__":

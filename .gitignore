@@ -177,7 +177,7 @@ train/runs/*
 
 # Temp/Test files
 data/test_scaler.py
-*/temp.*
+*/temp\.*
 
 # VSCode/Codium stuff
 *.code-workspace
