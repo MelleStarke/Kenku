@@ -13,7 +13,7 @@ from typing import Union, List, Tuple, Optional
 import numpy as np
 
 import torch 
-from torch import nn, Tensor
+from torch import nn, Tensor, tensor
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
@@ -53,7 +53,6 @@ logfile_handler.setFormatter(log_formatter)
 ### Utility ###
 ###############
 
-
 class CheckpointManager:
   def __init__(self, model, optimizer, save_path, interval=100, max=20):
     self.model = model
@@ -65,7 +64,7 @@ class CheckpointManager:
     
     self.saved_filenames = []
     
-  def __call__(self, epoch: int, batch_index: int):
+  def inform(self, epoch: int, batch_index: int):
     if batch_index % self.interval == 0:
       filename = f'epoch{epoch}_batch{batch_index}.pt'
       
@@ -130,8 +129,113 @@ def train_model(model: nn.Module,
                 test_interval: int      = 100,
                 DAL_weight: float       = 0.,
                 DAL_weight_decay: float = None):
-    pass
 
+  print('in train func')
+  return
+
+  DAL_weight_init = DAL_weight
+  train_loss_plot_interval = 100
+
+  # Define set of src and tgt melspecs to be used as images in Tensorboard.
+  # tb_img_batch will be fed into the network to visually assess performance.
+  tb_img_batch = next(iter(train_loader))
+  n_tb_imgs = min(10, len(tb_img_batch[0]))
+  tb_img_batch = tuple([batch_comp[:n_tb_imgs] for batch_comp in tb_img_batch])
+
+  model.train()
+
+  for epoch in range(epochs):
+    print(f"===== Epoch {epoch} =====")
+    # TODO: Maybe do this at the end of the epoch.
+    DAL_weight = DAL_weight_init * np.exp(-epoch * DAL_weight_decay)
+
+    running_loss = 0.
+
+    for batch_index, batch in tqdm(enumerate(train_loader)):
+      checkpoint_manager.inform(epoch, batch_index)
+
+      model.clear_paddings()
+      # TODO: make stack_factor a param at init
+      MSE_loss, DA_loss, A_np = model.calc_loss(*batch, stack_factor=4)
+      loss = MSE_loss + DA_loss * DAL_weight
+
+      model.zero_grad()
+      loss.backward()
+      optimizer.step()
+
+      running_loss += loss.item()
+
+      # Record training loss
+      if batch_index % train_loss_plot_interval == 0:
+        tensorboard_writer.add_scalar('train loss',
+                                      running_loss / train_loss_plot_interval,
+                                      epoch * len(train_loader) + batch_index)
+        running_loss = 0.
+      
+      # Get and record test loss
+      if batch_index % test_interval == 0:
+        test_loss = 0.
+
+        model.eval()
+        model.clear_paddings()
+
+        with torch.no_grad():
+          for batch in test_loader:
+            # TODO: make stack_factor a param at init
+            MSE_loss, DA_loss, A_np = model.calc_loss(*batch, stack_factor=4)
+            loss = MSE_loss + DA_loss * DAL_weight
+            test_loss += loss.item()
+
+        model.train()
+
+        tensorboard_writer.add_scalar('test loss',
+                                      test_loss / len(test_loader),
+                                      epoch * len(train_loader) + batch_index)
+        
+        tb_pred_imgs, tb_A = model(*tb_img_batch)
+        tb_src_imgs, tb_tgt_imgs, _, _, _, _, = tb_img_batch
+
+        
+        gc.collect()
+
+
+  '''
+   "# losses = []\n",
+    "epoch_markers = []\n",
+    "\n",
+    "w_da_init = _w_da_init\n",
+    "\n",
+    "for i in range(4):\n",
+    "  w_da = w_da_init * np.exp(-i * w_da_decay)\n",
+    "\n",
+    "save_every = 100\n",
+    "plot_every = 20\n",
+    "\n",
+    "imshow_batch = next(iter(loader))\n",
+    "maxlen_idx = np.argmax([torch.sum(mask).item() for mask in list(imshow_batch[3])])\n",
+    "src_mel, tgt_mel, _, _, src_info, tgt_info = [x[maxlen_idx] for x in imshow_batch]\n",
+    "\n",
+    "fig, axes = plt.subplots(3, 1, figsize=(10, 12))\n",
+    "fig.suptitle(f'Train Loss | lr={lrate}; sf={sf}; w_da={_w_da_init}; bs={batch_size}')\n",
+    "\n",
+    "for epoch in range(epochs):\n",
+    "  print(f\"===== Epoch {epoch} =====\")\n",
+    "  \n",
+    "  # w_da = w_da_init * np.exp(-epoch * w_da_decay)\n",
+    "  \n",
+    "  for bi, batch in tqdm(enumerate(loader), total=len(dataset) // batch_size):\n",
+    "  # for bi, batch in enumerate(loader):\n",
+    "    model.clear_paddings()\n",
+    "    mse_loss, da_loss, att_np = model.calc_loss(*batch, stack_factor=sf)\n",
+    "    loss = mse_loss + w_da * da_loss\n",
+    "    model.clear_paddings()\n",
+    "    loss_val = loss.item()\n",
+    "    losses.append(loss_val)\n",
+    "    \n",
+    "    model.zero_grad()\n",
+    "    loss.backward()\n",
+    "    optimizer.step()\n",
+'''
 
 ############
 ### MAIN ###
@@ -215,7 +319,8 @@ def main():
   args_dict = vars(args)
   
   # Dataset Config
-  dataset_config_keys = ['dataset_dir', 'min_samples', 'train_set_threshold', 'sample_pairing']
+  dataset_config_keys = ['dataset_dir', 'min_samples', 'train_set_threshold', 'sample_pairing',
+                         'preload_melspecs']
   dataset_config = create_config_dict(args_dict, dataset_config_keys, args.dataset_config_path)
   
   # Model Config
@@ -224,7 +329,7 @@ def main():
   model_config = create_config_dict(args_dict, model_config_keys, args.model_config_path)
   
   # Training Config
-  train_config_keys = ['epochs', 'learning_rate', 'batch_size', 'DA_weight', 'DA_weight_decay', 
+  train_config_keys = ['epochs', 'learning_rate', 'adam_betas', 'batch_size', 'DAL_weight', 'DAL_weight_decay', 
                        'test_interval', 'tensorboard_dir', 'checkpoint_dir', 'checkpoint_interval', 
                        'checkpoint_max', 'from_checkpoint']
   train_config = create_config_dict(args_dict, train_config_keys, args.train_config_path)
@@ -233,6 +338,9 @@ def main():
   #=== Load/Create Datasets ===#
   
   dataset_factory = ParallelDatasetFactory(dataset_dir = dataset_config['dataset_dir'])
+
+  # for k, v in dataset_factory.transcript_dict.items():
+  #   print(f'{len(v)}: {k}')
   
   train_set, test_set = dataset_factory.train_test_split(min_transcript_samples = dataset_config['min_samples'],
                                                          train_set_threshold    = dataset_config['train_set_threshold'],
@@ -240,14 +348,14 @@ def main():
   if dataset_config['preload_melspecs']:
     train_set.preload_melspecs()
     test_set.preload_melspecs()
-  
+
   data_loader_kwargs = {
-    'batch_size'  : dataset_config['batch_size'],
+    'batch_size'  : train_config['batch_size'],
     'shuffle'     : True,
-    'num_workers' : 0,
+    'num_workers' : 2,
     'collate_fn'  : collate_fn,
     'drop_last'   : False,
-    'generator'   : torch.Generator(device=device)
+    # 'generator'   : torch.Generator(device=device)
   }
   train_loader = DataLoader(train_set, **data_loader_kwargs)
   test_loader  = DataLoader(test_set,  **data_loader_kwargs)
@@ -326,6 +434,11 @@ def main():
   
   tensorboard_writer = SummaryWriter(tensorboard_dir)
   
+  #=== Write Config Files ===#
+
+  save_config(dataset_config, os.path.join(checkpoint_dir, 'dataset_config.json'))
+  save_config(model_config,   os.path.join(checkpoint_dir, 'model_config.json'))
+  save_config(train_config,   os.path.join(checkpoint_dir, 'train_config.json'))
   
   #=== Start Training ===#
 

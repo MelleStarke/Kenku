@@ -1,0 +1,10 @@
+numpy
+torch
+tqdm
+joblib
+h5py
+librosa
+soundfile
+matplotlib
+scikit-learn
+localspelling

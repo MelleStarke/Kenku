@@ -71,14 +71,14 @@ def process_transcripts(input_dir, output_dir):
         standardized_text = standardize_text(text)
 
         with open(output_path, "w", encoding="utf-8") as f:
-          # f.write(standardized_text)
+          f.write(standardized_text)
           print(standardized_text)
 
         # print(f"Processed: {text} -> {standardized_text}")
 
 
 if __name__ == "__main__":
-  input_directory = "../Data/raw/VCTK-Corpus/txt"
+  input_directory = "../Data/raw/VCTK/txt"
   output_directory = "../Data/processed/VCTK/transcript"
 
   process_transcripts(input_directory, output_directory)

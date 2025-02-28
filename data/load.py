@@ -198,8 +198,15 @@ class ParallelDatasetFactory(SpeakerInfoMixin):
       except KeyError:
         logger.warning(f"Speaker {speaker_id} not found in speaker info object. Skipping samples of this speaker.")
         continue
-        
-      for file_name in os.listdir(os.path.join(transcript_dir, speaker_id)):
+
+      speaker_dir = os.path.join(transcript_dir, speaker_id)
+
+      # TODO: Fix this it's ugly. Or maybe not.
+      if not os.path.exists(speaker_dir):
+          logger.warning(f'Speaker dir {speaker_dir} not found. Skipping.')
+          continue
+
+      for file_name in os.listdir(speaker_dir):
         transcript = ""
         
         transcript_path = os.path.join(transcript_dir, speaker_id, file_name)
@@ -207,6 +214,11 @@ class ParallelDatasetFactory(SpeakerInfoMixin):
           transcript = file.read().strip()
         
         melspec_path = transcript_path.replace(transcript_dir, melspec_dir).replace('.txt', '.h5')
+
+        # TODO: Fix this it's ugly. Or maybe not.
+        if not os.path.exists(melspec_path):
+          logger.warning(f'Transcript has no matching melspec in {melspec_path}. Skipping.')
+          continue
 
         sample = MelspecSample(file_name,
                                speaker_id,
