@@ -172,6 +172,7 @@ cython_debug/
 # Large files
 */checkpoints/*
 */plots/*
+*/tensorboard/*
 train/data/*
 train/runs/*
 

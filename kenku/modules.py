@@ -1,4 +1,6 @@
+import os
 import numpy as np
+import logging
 import torch
 import torch.nn as nn
 
@@ -6,9 +8,30 @@ from torch import Tensor
 from torch.nn import functional as F
 from torch.nn.utils.parametrizations import weight_norm
 from typing import List, Tuple, Union, Optional
+from pathlib import Path
 
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+###############
+### Logging ###
+###############
+
+logger = logging.getLogger(__name__)
+
+# Get the full path to the directory containing the current file
+current_file_dir = Path(__file__).parent.resolve()
+logfile_path = os.path.join(current_file_dir, 'logs/modules.log')
+
+# Configure file handler
+logfile_handler = logging.FileHandler(logfile_path, mode = 'a')
+logfile_handler.setLevel(logging.DEBUG)
+logger.addHandler(logfile_handler)
+
+# Configure logging format
+log_formatter = logging.Formatter(fmt     = '%(asctime)s (%(module)s:%(lineno)d) %(levelname)s: %(message)s',
+                                  datefmt = '%m/%d/%Y %I:%M:%S')
+logfile_handler.setFormatter(log_formatter)
 
 
 def calc_padding(kernel_size, dilation, stride=1):
@@ -160,6 +183,13 @@ class KameBlock(nn.Module):
     # # Prepration for embedding layer pass and appending to input.
     # class_tensor = torch.tensor(class_id, dtype=torch.int32).unsqueeze(1).to(device).repeat(1, timesteps)
     # embedding    = self.embed_layer(class_tensor).permute(0, 2, 1)
+    
+    if self.paddings[0] is not None:
+      input_batch_size = len(X)
+      padding_batch_size = len(self.paddings[0])
+      if input_batch_size != padding_batch_size:
+        logger.warning(f"Input batch size ({input_batch_size}) doesn't match padding batch size ({padding_batch_size}). Clearing paddings.")
+        self.clear_paddings()
     
     age, gender, accent = speaker_info
     embedding = self.embed_layer(age, gender, accent).unsqueeze(-1).repeat(1, 1, timesteps)

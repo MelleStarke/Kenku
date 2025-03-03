@@ -203,21 +203,28 @@ class ParallelDatasetFactory(SpeakerInfoMixin):
 
       # TODO: Fix this it's ugly. Or maybe not.
       if not os.path.exists(speaker_dir):
-          logger.warning(f'Speaker dir {speaker_dir} not found. Skipping.')
+          logger.warning(f'Speaker dir {speaker_dir} not found. Skipping speaker.')
           continue
 
       for file_name in os.listdir(speaker_dir):
-        transcript = ""
+        transcript = None
         
         transcript_path = os.path.join(transcript_dir, speaker_id, file_name)
         with open(transcript_path) as file:
           transcript = file.read().strip()
+          
+        if transcript is None:
+          logger.warning(f'Error reading transcript file {transcript_path}. Skipping sample.')
+          continue
+        elif transcript == "":
+          logger.warning(f'Transcript from file {transcript_path} was read but is empty. Skipping sample.')
+          continue
         
         melspec_path = transcript_path.replace(transcript_dir, melspec_dir).replace('.txt', '.h5')
 
         # TODO: Fix this it's ugly. Or maybe not.
         if not os.path.exists(melspec_path):
-          logger.warning(f'Transcript has no matching melspec in {melspec_path}. Skipping.')
+          logger.warning(f'Transcript has no matching melspec in {melspec_path}. Skipping sample.')
           continue
 
         sample = MelspecSample(file_name,
@@ -275,14 +282,15 @@ class ParallelDatasetFactory(SpeakerInfoMixin):
     test_transcript_dict = {}
     
     for transcript, sample_idxs in self.transcript_dict.items():
-      if len(sample_idxs) < min_transcript_samples:
+      n_samples = len(sample_idxs)
+      if n_samples < min_transcript_samples:
         continue
       
-      if len(sample_idxs) < train_set_threshold:
-        train_transcript_dict[transcript] = sample_idxs
+      elif n_samples < train_set_threshold:
+        test_transcript_dict[transcript]  = sample_idxs
         
       else:
-        test_transcript_dict[transcript] = sample_idxs
+        train_transcript_dict[transcript] = sample_idxs
         
     train_set = ParallelMelspecDataset(self.samples, 
                                        train_transcript_dict,
@@ -360,7 +368,8 @@ class ParallelMelspecDataset(Dataset, SpeakerInfoMixin):
       src_sample, tgt_sample = self.samples[src_idx], self.samples[tgt_idx]
       
     else:
-      tgt_sample = self.samples[idx]
+      sample_idxs = np.concatenate(list(self.transcript_dict.values()))
+      tgt_sample = self.samples[sample_idxs[idx]]
 
       src_candidate_idxs = self.transcript_dict[tgt_sample.transcript]
       src_idx = self.rng.choice(src_candidate_idxs)
@@ -425,17 +434,23 @@ if __name__ == "__main__":
   
   mode = ['basic',
           'validation',
-          'distribution'][2]
+          'distribution'][0]
 
   factory = ParallelDatasetFactory(dataset_dir = "../Data/processed/VCTK")
   
   dataset = factory.get_dataset()
   
   loader = DataLoader(dataset, batch_size = 8, shuffle = True, collate_fn = collate_fn)
-    
+  
   # Regular data loading
   if mode == 'basic':
-    pass
+    
+    for mini in range(3, 11):
+      train_set, test_set = factory.train_test_split(mini, sample_pairing=('prod', 'rand'))
+      print(f"{mini}:\n  TRAIN: {len(train_set)} | {len(train_set.transcript_dict)}\n" + \
+                     f"  TEST:  {len(test_set)} | {len(test_set.transcript_dict)}" + \
+                     f"  prop: {len(test_set) / len(train_set):.4}")
+    
 
   #=== Test/Validation Split ===#
   if mode == 'validation':

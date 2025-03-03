@@ -1,4 +1,6 @@
+import os
 import numpy as np
+import logging
 import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
@@ -6,6 +8,7 @@ import matplotlib.pyplot as plt
 from torch import Tensor
 from torch.nn.utils.parametrizations import weight_norm
 from typing import List, Tuple, Union, Optional
+from pathlib import Path
 
 from kenku.modules import KameBlock, Attention
 
@@ -14,20 +17,25 @@ from data.load import ParallelMelspecDataset, ParallelDatasetFactory, collate_fn
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+###############
+### Logging ###
+###############
 
-class LoggerPlaceholder():
-  def warning(self, msg):
-    print(f"WARN: {msg}")
-  def warn(self, msg):
-    print(f"WARN: {msg}")
-  def info(self, msg):
-    print(f"INFO: {msg}")
-  def error(self, msg):
-    print(f"ERROR: {msg}")
-  def debug(self, msg):
-    print(f"DEBUG: {msg}")
+logger = logging.getLogger(__name__)
 
-logger = LoggerPlaceholder()
+# Get the full path to the directory containing the current file
+current_file_dir = Path(__file__).parent.resolve()
+logfile_path = os.path.join(current_file_dir, 'logs/network.log')
+
+# Configure file handler
+logfile_handler = logging.FileHandler(logfile_path, mode = 'a')
+logfile_handler.setLevel(logging.DEBUG)
+logger.addHandler(logfile_handler)
+
+# Configure logging format
+log_formatter = logging.Formatter(fmt     = '%(asctime)s (%(module)s:%(lineno)d) %(levelname)s: %(message)s',
+                                  datefmt = '%m/%d/%Y %I:%M:%S')
+logfile_handler.setFormatter(log_formatter)
   
 
 def prepend_zero_frame(X, n_frames=1):
@@ -125,6 +133,7 @@ class KenkuTeacher(nn.Module):
                kernel_size: Optional[int] = 5,
                dilations: Optional[List[int]] = None,
                dropout_rate: Optional[float] = 0.1,
+               stack_factor: int = 4
     ):
     super(KenkuTeacher, self).__init__()
       
@@ -133,35 +142,52 @@ class KenkuTeacher(nn.Module):
       'num_conv_layers': num_conv_layers,
       'kernel_size': kernel_size,
       'dilations': dilations,
-      'dropout_rate': dropout_rate
+      'dropout_rate': dropout_rate,
     }
+    self.stack_factor = stack_factor
+    sf = stack_factor
     
     self.encoder = KameBlock(
-      in_ch, conv_ch, att_ch, embed_ch, num_accents, num_output_streams=2, **self.init_kwargs
+      in_ch * sf, conv_ch, att_ch, embed_ch, num_accents, num_output_streams=2, **self.init_kwargs
     ) 
     self.pre_decoder = KameBlock(
-      in_ch, conv_ch, att_ch, embed_ch, num_accents, **self.init_kwargs
+      in_ch * sf, conv_ch, att_ch, embed_ch, num_accents, **self.init_kwargs
     )
     self.attention = Attention()
     
     self.post_decoder = KameBlock(
-      att_ch, conv_ch, out_ch, embed_ch, num_accents, **self.init_kwargs
+      att_ch, conv_ch, out_ch * sf, embed_ch, num_accents, **self.init_kwargs
     )
     
+    self.init_kwargs['stack_factor'] = stack_factor
     self.main_loss_fn = torch.nn.MSELoss()
     
-  def forward(self, X_src, X_tgt, k_src, k_tgt):
+  def forward(self, X_src, X_tgt, k_src, k_tgt, stack=False):
     # future_KV = torch.jit.fork(self.encoder,     (X_src, k_src))
     # future_Q  = torch.jit.fork(self.pre_decoder, (X_tgt, k_tgt))
 
     # K, V = torch.jit.wait(future_KV)
     # Q    = torch.jit.wait(future_Q)
     
+    if self.encoder.paddings[0] is not None:
+      input_batch_size = len(X_src)
+      padding_batch_size = len(self.encoder.paddings[0])
+      if input_batch_size != padding_batch_size:
+        logger.warning(f"Input batch size ({input_batch_size}) doesn't match padding batch size ({padding_batch_size}). Clearing paddings.")
+        self.clear_paddings()
+    
+    if stack:
+      X_src = stack_frames(X_src, self.stack_factor)
+      X_tgt = stack_frames(X_tgt, self.stack_factor)
+    
     K, V = self.encoder(X_src, k_src)
     Q    = self.pre_decoder(X_tgt, k_tgt)
     
     R, A = self.attention(K, V, Q)
     Y = self.post_decoder(R, k_tgt)
+    
+    if stack:
+      Y = unstack_frames(Y, self.stack_factor)
     
     return Y, A
   
@@ -196,7 +222,7 @@ class KenkuTeacher(nn.Module):
     
   
   def calc_loss(self, src_mel, tgt_mel, src_mask, tgt_mask, src_info, tgt_info,
-                pos_weight = 1.0, gauss_width_da = 0.3, stack_factor = 4):
+                pos_weight = 1.0, gauss_width_da = 0.3):
     
     # TODO: Authors feed source mel into forward without appending zero frame,
     #       despite prepending target zero frame. This supposedly doesn't throw an error?
@@ -204,12 +230,12 @@ class KenkuTeacher(nn.Module):
     device = src_mel.device
     dtype  = src_mel.dtype
     
-    sf = stack_factor
+    sf = self.stack_factor
     
     # Stack frames along the mel-dimension, thereby reducing the frame-dimension.
-    if stack_factor > 1:
-      src_mel  = stack_frames(src_mel, stack_factor)
-      tgt_mel  = stack_frames(tgt_mel, stack_factor)
+    if sf > 1:
+      src_mel  = stack_frames(src_mel, sf)
+      tgt_mel  = stack_frames(tgt_mel, sf)
       
       src_mask = src_mask[:,:,::sf]
       tgt_mask = tgt_mask[:,:,::sf]
