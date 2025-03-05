@@ -132,7 +132,7 @@ class KenkuTeacher(nn.Module):
                num_conv_layers: Optional[int] = 8,
                kernel_size: Optional[int] = 5,
                dilations: Optional[List[int]] = None,
-               dropout_rate: Optional[float] = 0.1,
+               dropout_rate: Optional[float] = 0.2,
                stack_factor: int = 4
     ):
     super(KenkuTeacher, self).__init__()

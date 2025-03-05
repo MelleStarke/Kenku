@@ -1,6 +1,10 @@
 import os
 import json
 
+from typing import Any
+
+from torch import is_tensor
+
 
 def load_config(config_path: str):
   """
@@ -37,3 +41,15 @@ def walk_files(root, extension):
       if file.endswith(extension):
         yield os.path.join(path, file)
               
+def recursive_to_device(xs: Any, device):
+  if is_tensor(xs):
+    return xs.to(device=device)
+  
+  try:
+    xs[0]
+    xs_type = type(xs)
+    return xs_type([recursive_to_device(x, device) for x in xs])
+  
+  except IndexError as e:
+    err_msg = f"{e}\nType {type(x)} isn't indexable"
+    raise IndexError(err_msg)

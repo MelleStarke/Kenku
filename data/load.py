@@ -91,8 +91,8 @@ def collate_fn(batch):
   
   max_sig_len = max(max(src_sig_lengths), max(tgt_sig_lengths))
   
-  src_melspec_batch = torch.zeros((batch_size, n_mels, max_sig_len), dtype=torch.float32, device=device)
-  tgt_melspec_batch = torch.zeros((batch_size, n_mels, max_sig_len), dtype=torch.float32, device=device)
+  src_melspec_batch = torch.zeros((batch_size, n_mels, max_sig_len), dtype=torch.float32)
+  tgt_melspec_batch = torch.zeros((batch_size, n_mels, max_sig_len), dtype=torch.float32)
   
   #=== Mask Real vs. Padded Frames ===#
   src_mask_batch = torch.zeros_like(src_melspec_batch[:,0,:]).unsqueeze(1)
@@ -270,7 +270,11 @@ class ParallelDatasetFactory(SpeakerInfoMixin):
         
     return speaker_info
   
-  def train_test_split(self, min_transcript_samples: int = 3, train_set_threshold: int = 10, sample_pairing = 'product'):
+  def train_test_split(self, min_transcript_samples: int = 3, 
+                             train_set_threshold: int    = 10, 
+                             sample_pairing: str         = 'product', 
+                             downsample: bool            = True):
+      
     if isinstance(sample_pairing, str):
       sample_pairing = (sample_pairing, sample_pairing)
     
@@ -291,6 +295,25 @@ class ParallelDatasetFactory(SpeakerInfoMixin):
         
       else:
         train_transcript_dict[transcript] = sample_idxs
+        
+    # Downsampling
+    if downsample:
+      for sample_idxs in [train_transcript_dict.values(), test_transcript_dict.values()]:
+        # Find the lowest amount of samples across the transcripts.
+        least_samples = min([len(idx_list) for idx_list in sample_idxs])
+        for idx_list in sample_idxs:
+          # Delete the tail of the sample idx list after shuffling.
+          # This downsamples the data such that every transcript has an equal amount of samples.
+          self.rng.shuffle(idx_list)
+          del(idx_list[least_samples:])
+      
+      # TODO: remove this assert if it's never come up.
+      # Assert out of the above for loop to ensure downsampling wasn't done on a copied list but on the original.
+      for sample_idxs in [train_transcript_dict.values(), test_transcript_dict.values()]:
+        length_head = len(list(sample_idxs)[0])
+        assert all([len(idx_list) == length_head for idx_list in sample_idxs]), \
+          f"Downsampling failed. Expected all sample idx lists to have the same length " + \
+          f"but got lengths {list(map(len, sample_idxs))}."
         
     train_set = ParallelMelspecDataset(self.samples, 
                                        train_transcript_dict,
@@ -433,8 +456,10 @@ class ParallelMelspecDataset(Dataset, SpeakerInfoMixin):
 if __name__ == "__main__":
   
   mode = ['basic',
+          'test set len',
+          'sample idx lengths',
           'validation',
-          'distribution'][0]
+          'distribution'][2]
 
   factory = ParallelDatasetFactory(dataset_dir = "../Data/processed/VCTK")
   
@@ -443,7 +468,13 @@ if __name__ == "__main__":
   loader = DataLoader(dataset, batch_size = 8, shuffle = True, collate_fn = collate_fn)
   
   # Regular data loading
-  if mode == 'basic':
+  if mode == 'sample idx lengths':
+    train_set, test_set = factory.train_test_split(min_transcript_samples=5)
+    print(f"train set sample idxs lengths: {list(map(len, train_set.transcript_dict.values()))}")
+    print(f"test set sample idxs lengths:  {list(map(len, test_set.transcript_dict.values()))}")
+    
+  
+  if mode == 'test set len':
     
     for mini in range(3, 11):
       train_set, test_set = factory.train_test_split(mini, sample_pairing=('prod', 'rand'))

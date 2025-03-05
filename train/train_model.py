@@ -9,6 +9,7 @@ from datetime import datetime
 
 from typing import Union, List, Tuple, Optional
 
+from matplotlib.pyplot import get_cmap
 
 import numpy as np
 
@@ -21,7 +22,7 @@ from torchvision.utils import make_grid
 from tqdm import tqdm
 
 from data.load import ParallelDatasetFactory, ParallelMelspecDataset, collate_fn
-from data.util import save_config, load_config
+from data.util import save_config, load_config, recursive_to_device
 from kenku.modules import KameBlock
 from kenku.network import KenkuTeacher, stack_frames, unstack_frames, append_zero_frame
 
@@ -99,22 +100,23 @@ class CheckpointManager:
 
 
 class TensorboardManager:
-  def __init__(model: nn.Module, 
+  def __init__(self,
+               model: nn.Module, 
                test_loader: DataLoader, 
                directory: str, 
-               train_set_length: int,
+               n_train_batches: int,
                test_interval: int    = 100,
                max_test_batches: int = 50, 
-               n_images: int         = 5, 
-               device:str            = 'cpu'):
+               n_images: int         = 3):
       
     self.model = model
     self.test_loader = test_loader
-    self.device = device
     self.interval = test_interval
     self.max_test_batches = max_test_batches
-    self.train_set_length = train_set_length
+    self.n_train_batches = n_train_batches
     self.writer = SummaryWriter(log_dir=directory)
+    
+    self.global_step = 0
     
     self.img_batch = self.make_image_batch(n_images)
     
@@ -123,73 +125,104 @@ class TensorboardManager:
     test_batch_size = len(src_mel)
     n_images = min(n_images, test_batch_size)
     
-    src_mel  = src_mel[:n_images].to(self.device)
-    tgt_mel  = tgt_mel[:n_images].to(self.device)
-    src_info = tuple(k[:n_images].to(self.device) for k in src_info)
-    tgt_info = tuple(k[:n_images].to(self.device) for k in tgt_info)
+    src_mel  = src_mel[:n_images].to(device)
+    tgt_mel  = tgt_mel[:n_images].to(device)
+    src_info = tuple(k[:n_images].to(device) for k in src_info)
+    tgt_info = tuple(k[:n_images].to(device) for k in tgt_info)
     
     return src_mel, tgt_mel, src_info, tgt_info
   
-  def inform(epoch: int, batch_nr: int, DAL_weight: float):    
-    if batch_nr % self.internal == 0:
+  def inform(self, epoch: int, batch_nr: int):    
+    self.global_step = epoch * self.n_train_batches + batch_nr
+    
+    if batch_nr % self.interval == 0:
+      torch.cuda.empty_cache()
+      gc.collect()
+      
       self.model.eval()
       
       self.model.clear_paddings()
-      self.record_test_loss(epoch, batch_nr, DAL_weight)
+      self.record_test_loss()
       
       self.model.clear_paddings()
-      self.record_test_melspecs(epoch, batch_nr)
+      self.record_test_melspecs()
       
       torch.cuda.empty_cache()
       gc.collect()
       
       self.model.train()
+      
+  def write_config(self, config: dict, prefix=''):
+    lines = []
     
-  def img_batch_to_device(self, device):
-    src_mel, tgt_mel, src_info, tgt_info = self.img_batch
+    for k, v in config.items():
+      if isinstance(k, dict):
+        lines.append(f"{prefix}{k}")
+        sub_prefix = f'\t{prefix}'
+        sub_config = self.write_config(v, prefix=sub_prefix)
+        lines.append(sub_config)
+        
+      else:
+        lines.append(f'{prefix}{k}: v')
     
-    return (src_mel.to(device),
-            tgt_mel.to(device),
-            tuple(k.to(device) for k in src_info),
-            tuple(k.to(device) for k in tgt_info),)
+    config_string = '\n'.join(lines)
+    
+    # Prefix only exists if this is a sub-function call
+    if prefix:
+      return config_string
+    
+    self.writer.add_text('config', config_string, global_step=0)
+    
+  def record_train_loss(self, running_loss: List[float]):
+    train_loss = np.mean(running_loss)
+    
+    self.writer.add_scalar('train loss',
+                            train_loss,
+                            global_step = self.global_step)
   
-  def record_test_loss(self, epoch_nr: int, batch_nr: int, DAL_weight: float):
+  def record_test_loss(self):
     test_loss = 0.
     
-    n_test_batches = min(len(self.train_loader), self.max_test_batches)
+    n_test_batches = min(len(self.test_loader), self.max_test_batches)
     
     for bi, batch in enumerate(self.test_loader):
       if bi == n_test_batches:
         break
       
+      batch = recursive_to_device(batch, device)
+      
       MSE_loss, DA_loss, A_np = self.model.calc_loss(*batch)
-      loss = MSE_loss + DA_loss * DAL_weight
+      loss = MSE_loss
       test_loss += loss.detach().cpu().item()
       
-    self.writer('test loss',
-                test_loss / n_test_batches,
-                epoch_nr * self.train_set_length + batch_nr)
+    self.writer.add_scalar('test loss',
+                            test_loss / n_test_batches,
+                            global_step = self.global_step)
 
-  def record_test_melspecs(self, epoch_nr: int, batch_nr: int):
-    model_device = self.model.encoder.in_layer.device
-    
-    img_batch = self.img_batch_to_device(device)
-    pred_mel  = self.model(*img_batch).to(self.device)
-    
-    del img_batch
+  def record_test_melspecs(self):
+    pred_mel, _  = self.model(*self.img_batch, stack=True)
     
     src_mel, tgt_mel, _, _ = self.img_batch
     
-    n_frames_diff = tb_pred_imgs.shape[-1] - tb_src_imgs.shape[-1]
-    tb_src_imgs = append_zero_frame(tb_src_imgs, n_frames=n_frames_diff)
-    tb_tgt_imgs = append_zero_frame(tb_tgt_imgs, n_frames=n_frames_diff)
+    n_frames_diff = pred_mel.shape[-1] - src_mel.shape[-1]
+    src_mel = append_zero_frame(src_mel, n_frames=n_frames_diff)
+    tgt_mel = append_zero_frame(tgt_mel, n_frames=n_frames_diff)
     
-    full_img = torch.cat([src_mel, tgt_mel, pred_mel], dim=0).unsqueeze(1)
-    img_grid = make_grid(full_img, nrow=3)
+    full_img = torch.cat([src_mel, tgt_mel, pred_mel], dim=0).detach().cpu().numpy()
+    # Normalize
+    full_img = (full_img - full_img.min()) / (full_img.max() - full_img.min())
+    cmap = get_cmap('viridis')
+    # Convert single color channel to rgb channels
+    rgb_img = cmap(full_img)
+    # Remove alpha channel and transpose to B x C x H x W
+    rgb_img = rgb_img[..., :3].transpose(0, 3, 1, 2)
+    
+    img_grid = make_grid(torch.from_numpy(rgb_img), nrow=3)
     
     self.writer.add_image('test spectrograms',
                           img_grid,
-                          epoch_nr * self.train_set_length + batch_nr)
+                          global_step = self.global_step)
+
 
 def create_config_dict(args_dict: dict, keys: List[str], config_path: Optional[str] = ""):
   """Creates a config dictionary with the specified keys.
@@ -222,19 +255,17 @@ def train_model(model: nn.Module,
                 train_loader: DataLoader, 
                 test_loader: DataLoader, 
                 checkpoint_manager: CheckpointManager, 
-                tensorboard_writer: SummaryWriter,
+                tensorboard_manager: TensorboardManager,
                 
                 epochs: int             = 10,
-                test_interval: int      = 100,
+                train_loss_interval     = 100,
                 DAL_weight: float       = 0.,
-                DAL_weight_decay: float = None,
-                max_test_batches: int   = 100):
+                DAL_weight_decay: float = None):
 
   DAL_weight_init = DAL_weight
   if DAL_weight_decay is None:
     DAL_weight_decay = 4 / epochs
     
-  train_loss_plot_interval = 100
 
   # Define set of src and tgt melspecs to be used as images in Tensorboard.
   # tb_img_batch will be fed into the network to visually assess performance.
@@ -254,10 +285,13 @@ def train_model(model: nn.Module,
     # TODO: Maybe do this at the end of the epoch.
     DAL_weight = DAL_weight_init * np.exp(-epoch * DAL_weight_decay)
 
-    running_loss = 0.
+    running_loss = []
 
     for batch_index, batch in tqdm(enumerate(train_loader), total=len(train_loader)):
+      batch = recursive_to_device(batch, device)
+      
       checkpoint_manager.inform(epoch, batch_index)
+      tensorboard_manager.inform(epoch, batch_index)
 
       model.clear_paddings()
       # TODO: make stack_factor a param at init
@@ -268,62 +302,60 @@ def train_model(model: nn.Module,
       loss.backward()
       optimizer.step()
 
-      running_loss += loss.item()
+      running_loss.append(loss.detach().cpu().item())
 
       # Record training loss
-      if batch_index % train_loss_plot_interval == 0:
-        tensorboard_writer.add_scalar('train loss',
-                                      running_loss / train_loss_plot_interval,
-                                      epoch * len(train_loader) + batch_index)
-        running_loss = 0.
+      if batch_index % train_loss_interval == 0:
+        tensorboard_manager.record_train_loss(np.mean(running_loss))
+        running_loss = []
       
-      # Get and record test loss
-      if batch_index % test_interval == 0:
-        test_loss = 0.
-        n_test_batches = max_test_batches
+      # # Get and record test loss
+      # if batch_index % test_interval == 0:
+      #   test_loss = 0.
+      #   n_test_batches = max_test_batches
 
-        model.eval()
-        model.clear_paddings()
+      #   model.eval()
+      #   model.clear_paddings()
 
-        with torch.no_grad():
-          for bi, batch in enumerate(test_loader):
+      #   with torch.no_grad():
+      #     for bi, batch in enumerate(test_loader):
             
-            if bi == max_test_batches:
-              break
-            # TODO: make stack_factor a param at init
-            MSE_loss, DA_loss, A_np = model.calc_loss(*batch)
-            loss = MSE_loss + DA_loss * DAL_weight
-            test_loss += loss.detach().cpu().item()
+      #       if bi == max_test_batches:
+      #         break
+      #       # TODO: make stack_factor a param at init
+      #       MSE_loss, DA_loss, A_np = model.calc_loss(*batch)
+      #       loss = MSE_loss + DA_loss * DAL_weight
+      #       test_loss += loss.detach().cpu().item()
             
-          # If train loader was fully iterated over without early stopping.
-          else:
-            n_test_batches = len(test_loader)
+      #     # If train loader was fully iterated over without early stopping.
+      #     else:
+      #       n_test_batches = len(test_loader)
 
-        model.clear_paddings()
+      #   model.clear_paddings()
 
-        tensorboard_writer.add_scalar('test loss',
-                                      test_loss / n_test_batches,
-                                      epoch * len(train_loader) + batch_index)
+      #   tensorboard_writer.add_scalar('test loss',
+      #                                 test_loss / n_test_batches,
+      #                                 epoch * len(train_loader) + batch_index)
         
-        tb_pred_imgs, tb_A = model(*tb_img_batch, stack=True)
-        tb_pred_imgs = tb_pred_imgs.unsqueeze(1)
-        tb_src_imgs, tb_tgt_imgs, _, _, = tb_img_batch
+      #   tb_pred_imgs, tb_A = model(*tb_img_batch, stack=True)
+      #   tb_pred_imgs = tb_pred_imgs.unsqueeze(1)
+      #   tb_src_imgs, tb_tgt_imgs, _, _, = tb_img_batch
         
-        n_frames_diff = tb_pred_imgs.shape[-1] - tb_src_imgs.shape[-1]
-        tb_src_imgs = append_zero_frame(tb_src_imgs, n_frames=n_frames_diff).unsqueeze(1)
-        tb_tgt_imgs = append_zero_frame(tb_tgt_imgs, n_frames=n_frames_diff).unsqueeze(1)
-        # tb_imgs = torch.cat([tb_src_imgs, tb_tgt_imgs, tb_pred_imgs], dim=0).unsqueeze(1)
-        tb_img_grid = make_grid([*tb_src_imgs.unbind(0), *tb_tgt_imgs.unbind(0), *tb_pred_imgs.unbind(0)], nrow=3)
+      #   n_frames_diff = tb_pred_imgs.shape[-1] - tb_src_imgs.shape[-1]
+      #   tb_src_imgs = append_zero_frame(tb_src_imgs, n_frames=n_frames_diff).unsqueeze(1)
+      #   tb_tgt_imgs = append_zero_frame(tb_tgt_imgs, n_frames=n_frames_diff).unsqueeze(1)
+      #   # tb_imgs = torch.cat([tb_src_imgs, tb_tgt_imgs, tb_pred_imgs], dim=0).unsqueeze(1)
+      #   tb_img_grid = make_grid([*tb_src_imgs.unbind(0), *tb_tgt_imgs.unbind(0), *tb_pred_imgs.unbind(0)], nrow=3)
 
-        tensorboard_writer.add_image('test spectrograms', tb_img_grid)
+      #   tensorboard_writer.add_image('test spectrograms', tb_img_grid)
         
-        # Free up VRAM
-        for unneeded_var in [MSE_loss, DA_loss, A_np, loss, tb_pred_imgs, tb_src_imgs, tb_tgt_imgs]:
-          del(unneeded_var)
+      #   # Free up VRAM
+      #   for unneeded_var in [MSE_loss, DA_loss, A_np, loss, tb_pred_imgs, tb_src_imgs, tb_tgt_imgs]:
+      #     del(unneeded_var)
           
-        torch.cuda.empty_cache()
-        gc.collect()
-        model.train()
+      #   torch.cuda.empty_cache()
+      #   gc.collect()
+      #   model.train()
 
 
   '''
@@ -407,7 +439,9 @@ def main():
   parser.add_argument('--num-accents', type=int, default=11, metavar='INT',
                       help='Nr. of unique accents present in the data.')
   parser.add_argument('--stack-factor', '-sf', type=int, default=4, metavar='INT',
-                      help='Stacking factor used for frame stacking. Reduces signal length by the same factor.\n\n\n')
+                      help='Stacking factor used for frame stacking. Reduces signal length by the same factor.')
+  parser.add_argument('--dropout-rate', '-dor', type=float, default=0.2, metavar='FLOAT',
+                      help='Dropout rate for the linear input layers.\n\n\n')
   
   
   parser.add_argument('--train-config-path', type=str, default="", metavar='STR',
@@ -475,9 +509,6 @@ def main():
   #=== Load/Create Datasets ===#
   
   dataset_factory = ParallelDatasetFactory(dataset_dir = dataset_config['dataset_dir'])
-
-  # for k, v in dataset_factory.transcript_dict.items():
-  #   print(f'{len(v)}: {k}')
   
   train_set, test_set = dataset_factory.train_test_split(min_transcript_samples = dataset_config['min_samples'],
                                                          train_set_threshold    = dataset_config['train_set_threshold'],
@@ -489,14 +520,13 @@ def main():
   data_loader_kwargs = {
     'batch_size'  : train_config['batch_size'],
     'shuffle'     : True,
-    'num_workers' : 0,
+    'num_workers' : os.cpu_count(),
     'collate_fn'  : collate_fn,
     'drop_last'   : True,
-    # 'generator'   : torch.Generator(device=device)
+    'pin_memory'  : True
   }
   train_loader = DataLoader(train_set, **data_loader_kwargs)
   test_loader  = DataLoader(test_set,  **data_loader_kwargs)
-  print(len(test_loader))
   
   
   #=== Initialize Model ===#
@@ -560,7 +590,7 @@ def main():
   save_config(train_config,   os.path.join(checkpoint_dir, 'train_config.json'))
   
   
-  #=== Setup Tensorboard Writer ===#
+  #=== Setup Tensorboard Manager ===#
   
   tensorboard_dir = train_config['tensorboard_dir']
   
@@ -570,13 +600,24 @@ def main():
   if not os.path.exists(tensorboard_dir):
     os.makedirs(tensorboard_dir)
   
-  tensorboard_writer = SummaryWriter(tensorboard_dir)
+  tensorboard_manager = TensorboardManager(model,
+                                           test_loader,
+                                           tensorboard_dir,
+                                           n_train_batches  = len(train_loader),
+                                           test_interval    = train_config['test_interval'],
+                                           max_test_batches = train_config['max_test_batches'])
   
   #=== Write Config Files ===#
 
+  # Write to checkpoint
   save_config(dataset_config, os.path.join(checkpoint_dir, 'dataset_config.json'))
   save_config(model_config,   os.path.join(checkpoint_dir, 'model_config.json'))
   save_config(train_config,   os.path.join(checkpoint_dir, 'train_config.json'))
+  
+  # Write to Tensorboard
+  tensorboard_manager.write_config({'dataset_config': dataset_config,
+                                    'model_config'  : model_config,
+                                    'train_config'  : train_config})
   
   #=== Start Training ===#
 
@@ -585,12 +626,11 @@ def main():
               train_loader,
               test_loader,
               checkpoint_manager,
-              tensorboard_writer,
+              tensorboard_manager,
+              
               epochs           = train_config['epochs'],
-              test_interval    = train_config['test_interval'],
               DAL_weight       = train_config['DAL_weight'],
-              DAL_weight_decay = train_config['DAL_weight_decay'],
-              max_test_batches = train_config['max_test_batches']
+              DAL_weight_decay = train_config['DAL_weight_decay']
               )
 
 if __name__ == '__main__':

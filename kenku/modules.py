@@ -112,7 +112,7 @@ class KameBlock(nn.Module):
                num_output_streams: Optional[int] = 1,
                signal_segment_len: int = 80,
                dilations: Optional[List[int]] = None,
-               dropout_rate: Optional[float] = 0.1,
+               dropout_rate: Optional[float] = 0.2,
     ):
     """Class for recurring structure in FastConvS2S-VC model. Based on Kameoka et al.'s model.
        Features:
