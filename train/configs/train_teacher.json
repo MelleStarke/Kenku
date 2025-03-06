@@ -1,6 +1,0 @@
-{
-  "epochs": 5,
-  "batch_size": 20,
-  "lrate": 5e-5,
-  "sf": 4
-}

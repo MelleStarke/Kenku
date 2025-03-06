@@ -11,6 +11,8 @@ from typing import Union, List, Tuple, Optional
 
 from matplotlib.pyplot import get_cmap
 
+from heapq import heappush, heappop
+
 import numpy as np
 
 import torch 
@@ -21,8 +23,9 @@ from torchvision.utils import make_grid
 
 from tqdm import tqdm
 
+# Local imports
 from data.load import ParallelDatasetFactory, ParallelMelspecDataset, collate_fn
-from data.util import save_config, load_config, recursive_to_device
+from data.util import save_config, load_config, recursive_to_device, recursive_map
 from kenku.modules import KameBlock
 from kenku.network import KenkuTeacher, stack_frames, unstack_frames, append_zero_frame
 
@@ -69,19 +72,25 @@ class CheckpointManager:
     self.interval = interval
     self.max_checkpoints = max
     
-    self.saved_filenames = []
+    self.filenames_heap = []
+    
+    self.latest_test_loss = np.inf
     
   def inform(self, epoch: int, batch_index: int):
     if batch_index % self.interval == 0:
-      filename = f'epoch{epoch}_batch{batch_index}.pt'
-      
-      self.save_checkpoint(filename)
-      self.saved_filenames.append(filename)
-      
-      # Remove old checkpoint if the maximum amount is exceeded
-      if len(self.saved_filenames) > self.max_checkpoints:
-        self.delete_oldest_checkpoint()
-      
+      save_checkpoint =    len(self.filenames_heap) < self.max_checkpoints \
+                        or self.filenames_heap[0][0] < -self.latest_test_loss
+                        
+      if save_checkpoint:
+        filename = f'epoch{epoch}_batch{batch_index}_loss{self.latest_test_loss:.4}.pt'
+        
+        self.save_checkpoint(filename)
+        heappush(self.filenames_heap, (-self.latest_test_loss, filename))
+        
+        # Remove checkpoint with the highest test loss if the maximum amount is exceeded
+        if len(self.filenames_heap) > self.max_checkpoints:
+          self.delete_worst_checkpoint()
+        
   def save_checkpoint(self, filename):
     checkpoint = {
       'model'    : self.model.state_dict(),
@@ -90,8 +99,9 @@ class CheckpointManager:
     checkpoint_path = os.path.join(self.save_path, filename)
     torch.save(checkpoint, checkpoint_path)
     
-  def delete_oldest_checkpoint(self):
-    checkpoint_path = os.path.join(self.save_path, self.saved_filenames.pop(0))
+  def delete_worst_checkpoint(self):
+    _, filename = heappop(self.filenames_heap)
+    checkpoint_path = os.path.join(self.save_path, filename)
     
     if os.path.exists(checkpoint_path):
       os.remove(checkpoint_path)
@@ -105,9 +115,9 @@ class TensorboardManager:
                test_loader: DataLoader, 
                directory: str, 
                n_train_batches: int,
-               test_interval: int    = 100,
-               max_test_batches: int = 50, 
-               n_images: int         = 3):
+               test_interval: int    = 500,
+               max_test_batches: int = 100, 
+               n_images: int         = 6):
       
     self.model = model
     self.test_loader = test_loader
@@ -119,25 +129,39 @@ class TensorboardManager:
     self.global_step = 0
     
     self.img_batch = self.make_image_batch(n_images)
+    self.checkpoint_manager = None
     
   def make_image_batch(self, n_images):
-    src_mel, tgt_mel, _, _, src_info, tgt_info = next(iter(self.test_loader))
-    test_batch_size = len(src_mel)
-    n_images = min(n_images, test_batch_size)
+    src_mel, tgt_mel, src_mask, tgt_mask, src_info, tgt_info = next(iter(self.test_loader))
+    batch_size, _, n_frames = src_mel.shape
+    n_images = min(n_images, batch_size)
     
-    src_mel  = src_mel[:n_images].to(device)
-    tgt_mel  = tgt_mel[:n_images].to(device)
+    frame_idxs = torch.arange(n_frames)
+    # Concatenated frame vectors of shape (batch_size * 2) x n_frames
+    masked_frames = torch.cat([src_mask[:n_images, 0, :], tgt_mask[:n_images, 0, :]], dim=0)
+    masked_frame_idxs = masked_frames * frame_idxs
+    # Index of the last frame containing real (i.e. non-padded) data.
+    # Melspecs are truncated at this index to reduce image size while keeping actual data.
+    last_masked_frame = masked_frame_idxs.max().to(torch.int).detach().cpu().item() + 1
+    
+    src_mel  = src_mel[:n_images, :, :last_masked_frame].to(device)
+    tgt_mel  = tgt_mel[:n_images, :, :last_masked_frame].to(device)
     src_info = tuple(k[:n_images].to(device) for k in src_info)
     tgt_info = tuple(k[:n_images].to(device) for k in tgt_info)
     
     return src_mel, tgt_mel, src_info, tgt_info
   
-  def inform(self, epoch: int, batch_nr: int):    
+  def link_checkpoint_manager(self, checkpoint_manager):
+    self.checkpoint_manager = checkpoint_manager
+  
+  def inform(self, epoch: int, batch_nr: int):
+    # If self.interval is negative, determine when to plot loss and mels from the poch nr. instead of batch nr.
+    numerator = epoch if self.interval < 0 else batch_nr
     self.global_step = epoch * self.n_train_batches + batch_nr
     
-    if batch_nr % self.interval == 0:
-      torch.cuda.empty_cache()
-      gc.collect()
+    if numerator % self.interval == 0:
+      # torch.cuda.empty_cache()
+      # gc.collect()
       
       self.model.eval()
       
@@ -147,23 +171,29 @@ class TensorboardManager:
       self.model.clear_paddings()
       self.record_test_melspecs()
       
-      torch.cuda.empty_cache()
-      gc.collect()
+      # torch.cuda.empty_cache()
+      # gc.collect()
       
       self.model.train()
       
   def write_config(self, config: dict, prefix=''):
+    """Recursively format a config dict as a string.
+
+    Args:
+        config (dict): Possibly nested config dictionary.
+        prefix (str, optional): Prefix used to correctly indent items. Defaults to ''.
+    """
     lines = []
     
     for k, v in config.items():
-      if isinstance(k, dict):
-        lines.append(f"{prefix}{k}")
+      if isinstance(v, dict):
+        lines.append(f"\n{prefix}{k}")
         sub_prefix = f'\t{prefix}'
         sub_config = self.write_config(v, prefix=sub_prefix)
         lines.append(sub_config)
         
       else:
-        lines.append(f'{prefix}{k}: v')
+        lines.append(f'{prefix}{k}: {v}')
     
     config_string = '\n'.join(lines)
     
@@ -194,13 +224,16 @@ class TensorboardManager:
       MSE_loss, DA_loss, A_np = self.model.calc_loss(*batch)
       loss = MSE_loss
       test_loss += loss.detach().cpu().item()
-      
+    
+    test_loss /= n_test_batches
     self.writer.add_scalar('test loss',
-                            test_loss / n_test_batches,
+                            np.mean(test_loss),
                             global_step = self.global_step)
+    
+    self.checkpoint_manager.latest_test_loss = test_loss
 
   def record_test_melspecs(self):
-    pred_mel, _  = self.model(*self.img_batch, stack=True)
+    pred_mel, attention = self.model(*self.img_batch, stack=True)
     
     src_mel, tgt_mel, _, _ = self.img_batch
     
@@ -208,19 +241,28 @@ class TensorboardManager:
     src_mel = append_zero_frame(src_mel, n_frames=n_frames_diff)
     tgt_mel = append_zero_frame(tgt_mel, n_frames=n_frames_diff)
     
-    full_img = torch.cat([src_mel, tgt_mel, pred_mel], dim=0).detach().cpu().numpy()
+    full_mel = torch.cat([src_mel, tgt_mel, pred_mel], dim=0).detach().cpu().numpy()
     # Normalize
-    full_img = (full_img - full_img.min()) / (full_img.max() - full_img.min())
+    full_mel = (full_mel - full_mel.min()) / (full_mel.max() - full_mel.min())
     cmap = get_cmap('viridis')
     # Convert single color channel to rgb channels
-    rgb_img = cmap(full_img)
+    rgb_mel = cmap(full_mel)
     # Remove alpha channel and transpose to B x C x H x W
-    rgb_img = rgb_img[..., :3].transpose(0, 3, 1, 2)
+    rgb_mel = rgb_mel[..., :3].transpose(0, 3, 1, 2)
     
-    img_grid = make_grid(torch.from_numpy(rgb_img), nrow=3)
+    mel_grid = make_grid(torch.from_numpy(rgb_mel), nrow = len(full_mel) // 3)
     
     self.writer.add_image('test spectrograms',
-                          img_grid,
+                          mel_grid,
+                          global_step = self.global_step)
+    
+    attention = attention.detach().cpu().numpy()
+    attention = (attention - attention.min()) / (attention.max() - attention.min())
+    rgb_att   = cmap(attention)[..., :3].transpose(0, 3, 1, 2)
+    att_grid  = make_grid(torch.from_numpy(rgb_att), nrow = len(rgb_att))
+    
+    self.writer.add_image('test spectrograms attention',
+                          att_grid,
                           global_step = self.global_step)
 
 
@@ -290,8 +332,8 @@ def train_model(model: nn.Module,
     for batch_index, batch in tqdm(enumerate(train_loader), total=len(train_loader)):
       batch = recursive_to_device(batch, device)
       
-      checkpoint_manager.inform(epoch, batch_index)
       tensorboard_manager.inform(epoch, batch_index)
+      checkpoint_manager.inform(epoch, batch_index)
 
       model.clear_paddings()
       # TODO: make stack_factor a param at init
@@ -308,93 +350,7 @@ def train_model(model: nn.Module,
       if batch_index % train_loss_interval == 0:
         tensorboard_manager.record_train_loss(np.mean(running_loss))
         running_loss = []
-      
-      # # Get and record test loss
-      # if batch_index % test_interval == 0:
-      #   test_loss = 0.
-      #   n_test_batches = max_test_batches
 
-      #   model.eval()
-      #   model.clear_paddings()
-
-      #   with torch.no_grad():
-      #     for bi, batch in enumerate(test_loader):
-            
-      #       if bi == max_test_batches:
-      #         break
-      #       # TODO: make stack_factor a param at init
-      #       MSE_loss, DA_loss, A_np = model.calc_loss(*batch)
-      #       loss = MSE_loss + DA_loss * DAL_weight
-      #       test_loss += loss.detach().cpu().item()
-            
-      #     # If train loader was fully iterated over without early stopping.
-      #     else:
-      #       n_test_batches = len(test_loader)
-
-      #   model.clear_paddings()
-
-      #   tensorboard_writer.add_scalar('test loss',
-      #                                 test_loss / n_test_batches,
-      #                                 epoch * len(train_loader) + batch_index)
-        
-      #   tb_pred_imgs, tb_A = model(*tb_img_batch, stack=True)
-      #   tb_pred_imgs = tb_pred_imgs.unsqueeze(1)
-      #   tb_src_imgs, tb_tgt_imgs, _, _, = tb_img_batch
-        
-      #   n_frames_diff = tb_pred_imgs.shape[-1] - tb_src_imgs.shape[-1]
-      #   tb_src_imgs = append_zero_frame(tb_src_imgs, n_frames=n_frames_diff).unsqueeze(1)
-      #   tb_tgt_imgs = append_zero_frame(tb_tgt_imgs, n_frames=n_frames_diff).unsqueeze(1)
-      #   # tb_imgs = torch.cat([tb_src_imgs, tb_tgt_imgs, tb_pred_imgs], dim=0).unsqueeze(1)
-      #   tb_img_grid = make_grid([*tb_src_imgs.unbind(0), *tb_tgt_imgs.unbind(0), *tb_pred_imgs.unbind(0)], nrow=3)
-
-      #   tensorboard_writer.add_image('test spectrograms', tb_img_grid)
-        
-      #   # Free up VRAM
-      #   for unneeded_var in [MSE_loss, DA_loss, A_np, loss, tb_pred_imgs, tb_src_imgs, tb_tgt_imgs]:
-      #     del(unneeded_var)
-          
-      #   torch.cuda.empty_cache()
-      #   gc.collect()
-      #   model.train()
-
-
-  '''
-   "# losses = []\n",
-    "epoch_markers = []\n",
-    "\n",
-    "w_da_init = _w_da_init\n",
-    "\n",
-    "for i in range(4):\n",
-    "  w_da = w_da_init * np.exp(-i * w_da_decay)\n",
-    "\n",
-    "save_every = 100\n",
-    "plot_every = 20\n",
-    "\n",
-    "imshow_batch = next(iter(loader))\n",
-    "maxlen_idx = np.argmax([torch.sum(mask).item() for mask in list(imshow_batch[3])])\n",
-    "src_mel, tgt_mel, _, _, src_info, tgt_info = [x[maxlen_idx] for x in imshow_batch]\n",
-    "\n",
-    "fig, axes = plt.subplots(3, 1, figsize=(10, 12))\n",
-    "fig.suptitle(f'Train Loss | lr={lrate}; sf={sf}; w_da={_w_da_init}; bs={batch_size}')\n",
-    "\n",
-    "for epoch in range(epochs):\n",
-    "  print(f\"===== Epoch {epoch} =====\")\n",
-    "  \n",
-    "  # w_da = w_da_init * np.exp(-epoch * w_da_decay)\n",
-    "  \n",
-    "  for bi, batch in tqdm(enumerate(loader), total=len(dataset) // batch_size):\n",
-    "  # for bi, batch in enumerate(loader):\n",
-    "    model.clear_paddings()\n",
-    "    mse_loss, da_loss, att_np = model.calc_loss(*batch, stack_factor=sf)\n",
-    "    loss = mse_loss + w_da * da_loss\n",
-    "    model.clear_paddings()\n",
-    "    loss_val = loss.item()\n",
-    "    losses.append(loss_val)\n",
-    "    \n",
-    "    model.zero_grad()\n",
-    "    loss.backward()\n",
-    "    optimizer.step()\n",
-'''
 
 ############
 ### MAIN ###
@@ -418,6 +374,8 @@ def main():
                       help='How samples are paired into source and target. Choose `product` for the Cartesian product. ' + \
                             'Choose `random` to randomly pair a source sample to every target sample. ' + \
                             'You can also specify it separately for the train and test set respectively. e.g. "--sample-pairing product random".')        
+  parser.add_argument('--no-downsample', action='store_true',
+                      help='Disable downsampling of sentence samples. Results in skewed data but may not be an issue.')
   parser.add_argument('--preload-melspecs', action='store_true',
                         help='Load all mel-spectrograms in RAM to avoid continuous file I/O.\n\n\n')                
   
@@ -428,9 +386,9 @@ def main():
                       help='Class of the model you wish to train: KenkuTeacher or KenkuStudent.')
   parser.add_argument('--in-ch', type=int, default=80, metavar='INT',
                       help='Nr. of input (i.e. frequency) channels.')
-  parser.add_argument('--conv-ch', type=int, default=512, metavar='INT',
+  parser.add_argument('--conv-ch', type=int, default=128, metavar='INT',
                       help='Nr. of convolutional channels.')
-  parser.add_argument('--att-ch', type=int, default=512, metavar='INT',
+  parser.add_argument('--att-ch', type=int, default=128, metavar='INT',
                       help='Nr. of attention channels.')
   parser.add_argument('--out-ch', type=int, default=80, metavar='INT',
                       help='Nr. of output (i.e. frequency) channels.')
@@ -447,21 +405,23 @@ def main():
   parser.add_argument('--train-config-path', type=str, default="", metavar='STR',
                       help='Optional path to a training config file (.json). Used instead of parsed arguments.\n\n')
   
-  parser.add_argument('--epochs', type=int, default=10, metavar='INT',
+  parser.add_argument('--epochs', type=int, default=20, metavar='INT',
                       help='Nr. of epochs over the dataset.')
-  parser.add_argument('--batch-size', '-bs', type=int, default=20, metavar='INT',
+  parser.add_argument('--batch-size', '-bs', type=int, default=32, metavar='INT',
                       help='Batch size.')
   parser.add_argument('--learning-rate', '-lr', type=float, default=5e-5, metavar='FLOAT',
                       help='Learning rate.')
   parser.add_argument('--adam-betas', type=float, nargs=2, default=[0.9, 0.999],  metavar='FLOAT',
                       help='Betas use for the Adam optimizer.')
-  parser.add_argument('--DAL-weight', '-wda', type=float, default=0., metavar='FLOAT',
+  parser.add_argument('--DAL-weight', '-wda', type=float, default=2000., metavar='FLOAT',
                       help='Starting value of the diagonal attention loss weight.')
   parser.add_argument('--DAL-weight-decay', '-wdad', type=float, default=None, metavar='FLOAT',
                       help='Decay rate for the diagonal attention loss weight. Defaults to 4 / epochs. ' + \
-                            'Decay steps are done as wda <- wda * exp(-epoch * wda_decay).')
-  parser.add_argument('--test-interval', type=int, default=100, metavar='INT',
+                            'Decay steps are done through wda <- wda * exp(-epoch * wda_decay).')
+  parser.add_argument('--test-interval', type=int, default=200, metavar='INT',
                       help='Amount of update steps between every test loss calculation.')
+  parser.add_argument('--melspec-interval', type=int, default=500, metavar='INT',
+                      help='Amount of update steps between each visualisation of test melspecs and attention matrices.')
   parser.add_argument('--max-test-batches', type=int, default=100, metavar='INT',
                       help='Max nr. of batches to calculate the test loss over')
   parser.add_argument('--tensorboard-dir', type=str, default=None, metavar='STR',
@@ -469,7 +429,7 @@ def main():
   parser.add_argument('--checkpoint-dir', type=str, default=None, metavar='STR',
                       help='Directory to store checkpoints in. Defaults to `train/checkpoints/{--model-class}/{<datetime>}`. ' + \
                             'Where <datetime> is the date and time at script execution. Checkpoints include both model and optimizer params.')
-  parser.add_argument('--checkpoint-interval', type=int, default=100, metavar='INT',
+  parser.add_argument('--checkpoint-interval', type=int, default=500, metavar='INT',
                       help='Amount of update steps between each checkpoint.')
   parser.add_argument('--checkpoint-max', type=int, default=20, metavar='INT',
                       help='Maximum number of checkpoints saved on disk, FIFO.')
@@ -492,7 +452,7 @@ def main():
   
   # Dataset Config
   dataset_config_keys = ['dataset_dir', 'min_samples', 'train_set_threshold', 'sample_pairing',
-                         'preload_melspecs']
+                         'no_downsample','preload_melspecs']
   dataset_config = create_config_dict(args_dict, dataset_config_keys, args.dataset_config_path)
   
   # Model Config
@@ -502,7 +462,7 @@ def main():
   
   # Training Config
   train_config_keys = ['epochs', 'learning_rate', 'adam_betas', 'batch_size', 'DAL_weight', 'DAL_weight_decay', 
-                       'test_interval', 'max_test_batches', 'tensorboard_dir', 'checkpoint_dir', 'checkpoint_interval', 
+                       'test_interval', 'melspec_interval', 'max_test_batches', 'tensorboard_dir', 'checkpoint_dir', 'checkpoint_interval', 
                        'checkpoint_max', 'from_checkpoint']
   train_config = create_config_dict(args_dict, train_config_keys, args.train_config_path)
   
@@ -512,7 +472,8 @@ def main():
   
   train_set, test_set = dataset_factory.train_test_split(min_transcript_samples = dataset_config['min_samples'],
                                                          train_set_threshold    = dataset_config['train_set_threshold'],
-                                                         sample_pairing         = dataset_config['sample_pairing'])
+                                                         sample_pairing         = dataset_config['sample_pairing'],
+                                                         downsample             = not dataset_config['no_downsample'])
   if dataset_config['preload_melspecs']:
     train_set.preload_melspecs()
     test_set.preload_melspecs()
@@ -569,7 +530,7 @@ def main():
   
   #=== Setup Checkpoint Manager ===#
   
-  timestamp = timestamp = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
+  timestamp = timestamp = datetime.now().strftime("%y-%m-%d_%H:%M:%S")
   checkpoint_dir = train_config['checkpoint_dir']
   
   if not checkpoint_dir:
@@ -606,6 +567,8 @@ def main():
                                            n_train_batches  = len(train_loader),
                                            test_interval    = train_config['test_interval'],
                                            max_test_batches = train_config['max_test_batches'])
+  
+  tensorboard_manager.link_checkpoint_manager(checkpoint_manager)
   
   #=== Write Config Files ===#
 

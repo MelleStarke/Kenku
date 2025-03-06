@@ -390,13 +390,16 @@ class ParallelMelspecDataset(Dataset, SpeakerInfoMixin):
       src_idx, tgt_idx = self.cartprod_sample_pairs[idx]
       src_sample, tgt_sample = self.samples[src_idx], self.samples[tgt_idx]
       
-    else:
+    elif self.sample_pairing in ['rand', 'random']:
       sample_idxs = np.concatenate(list(self.transcript_dict.values()))
       tgt_sample = self.samples[sample_idxs[idx]]
 
       src_candidate_idxs = self.transcript_dict[tgt_sample.transcript]
       src_idx = self.rng.choice(src_candidate_idxs)
       src_sample = self.samples[src_idx]
+      
+    else:
+      raise ValueError(f"'{sample_pairing}' not a valid sample pairing mode. Choose 'random' or 'product'.")
       
     src_info = (self.encode_age(src_sample.age),
                 self.encode_gender(src_sample.gender),

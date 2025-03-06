@@ -1,7 +1,7 @@
 import os
 import json
 
-from typing import Any
+from typing import Any, Callable
 
 from torch import is_tensor
 
@@ -52,4 +52,17 @@ def recursive_to_device(xs: Any, device):
   
   except IndexError as e:
     err_msg = f"{e}\nType {type(x)} isn't indexable"
+    raise IndexError(err_msg)
+  
+def recursive_map(xs: Any, fn: Callable, cond = is_tensor):
+  if cond(xs):
+    return fn(xs)
+  
+  try:
+    xs[0]
+    xs_type = type(xs)
+    return xs_type([recursive_map(x, fn, cond) for x in xs])
+  
+  except IndexError as e:
+    err_msg = f"{e}\nType {type(xs)} isn't indexable"
     raise IndexError(err_msg)
