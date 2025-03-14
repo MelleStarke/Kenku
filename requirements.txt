@@ -5,7 +5,7 @@ tqdm==4.66
 joblib==1.4
 h5py==3.11
 librosa==0.10
-soundfile==0.12
+soundfile>=0.10
 matplotlib==3.9
 scikit-learn==1.5
 localspelling==0.94

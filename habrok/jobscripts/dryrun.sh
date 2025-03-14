@@ -11,6 +11,13 @@
 #SBATCH --job-name="dryrun"
 #SBATCH --output="dryrun_%j.out"
 
+module purge
+module load Python/3.11.5-GCCcore-13.2.0
+module load PyTorch/2.1.2-foss-2023a-CUDA-12.1.1
+source ~/venvs/py3.11.5/bin/activate
+
+cd ~/scratch
+
 echo "$PWD" >> log.txt
 echo $'\r' >> log.txt
 
@@ -35,6 +42,8 @@ echo date
 echo "Finished moving Kenku"
 echo $'\r' >> log.txt
 
+echo "This is only in the terminal output"
+
 python --version >> log.txt
 
 echo "import torch;import os;print(torch.cuda.is_available());print(torch.cuda.device_count());print(os.cpu_count())" > test.py
@@ -42,3 +51,5 @@ echo "import torch;import os;print(torch.cuda.is_available());print(torch.cuda.d
 srun python test.py
 
 mv ./* ~/temp/
+
+deactivate
