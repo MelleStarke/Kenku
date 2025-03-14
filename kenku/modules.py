@@ -144,6 +144,8 @@ class KameBlock(nn.Module):
     
     if dilations is None:
       dilations = [3**(i%4) for i in range(num_conv_layers)]
+      # # TODO Temp, remove if you suddenly find this
+      # dilations.reverse()
       
     else:
       assert len(dilations) == num_conv_layers,\
@@ -184,7 +186,7 @@ class KameBlock(nn.Module):
     # class_tensor = torch.tensor(class_id, dtype=torch.int32).unsqueeze(1).to(device).repeat(1, timesteps)
     # embedding    = self.embed_layer(class_tensor).permute(0, 2, 1)
     
-    if self.paddings[0] is not None:
+    if not self.training and self.paddings[0] is not None:
       input_batch_size = len(X)
       padding_batch_size = len(self.paddings[0])
       if input_batch_size != padding_batch_size:
@@ -202,7 +204,9 @@ class KameBlock(nn.Module):
     # Pass through Conv GLU blocks.
     for i, layer in enumerate(self.conv_blocks):
       X_, padding = layer(X_, embedding, padding=self.paddings[i])
-      self.paddings[i] = padding
+      
+      if not self.training:
+        self.paddings[i] = padding
     
     X_emb = concat_embedding(embedding, X_)
     Y = self.out_layer(X_emb)

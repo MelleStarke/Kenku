@@ -64,13 +64,14 @@ logfile_handler.setFormatter(log_formatter)
 ###############
 
 class CheckpointManager:
-  def __init__(self, model, optimizer, save_path, interval=100, max=20):
+  def __init__(self, model, optimizer, save_path, interval=100, max=10):
     self.model = model
     self.optimizer = optimizer
     self.save_path = save_path
     
     self.interval = interval
-    self.max_checkpoints = max
+    self.max_checkpoints = max - 1
+    self.latest_checkpoint_filepath = ""
     
     self.filenames_heap = []
     
@@ -78,18 +79,38 @@ class CheckpointManager:
     
   def inform(self, epoch: int, batch_index: int):
     if batch_index % self.interval == 0:
-      save_checkpoint =    len(self.filenames_heap) < self.max_checkpoints \
-                        or self.filenames_heap[0][0] < -self.latest_test_loss
-                        
-      if save_checkpoint:
-        filename = f'epoch{epoch}_batch{batch_index}_loss{self.latest_test_loss:.4}.pt'
-        
+      filename = f'epoch{epoch}_batch{batch_index}_loss{self.latest_test_loss:.4}.pt'
+      
+      update_heap =    len(self.filenames_heap) < self.max_checkpoints \
+                    or self.filenames_heap[0][0] < -self.latest_test_loss
+      
+      # Update heap according to test loss  
+      if update_heap:
         self.save_checkpoint(filename)
         heappush(self.filenames_heap, (-self.latest_test_loss, filename))
         
         # Remove checkpoint with the highest test loss if the maximum amount is exceeded
         if len(self.filenames_heap) > self.max_checkpoints:
           self.delete_worst_checkpoint()
+          
+      # Update latest checkpoint if it isn't already in the heap
+      else:
+        if os.path.exists(self.latest_checkpoint_filepath):
+          os.remove(self.latest_checkpoint_filepath)
+        
+        self.latest_checkpoint_filepath = os.path.join(self.save_path, filename)
+        self.save_checkpoint(filename)
+        
+      # Ensure checkpoints get removed to prevent excessive data storage.
+      n_checkpoints = len([os.path.isfile(f) for f in os.path.listdir(self.save_path)])
+      
+      if n_checkpoints > self.max_checkpoints + 1:
+        logger.warning(f"The amount of checkpoints in {self.save_path} ({n_checkpoints}) " + \
+                       f"exceeds the max ({self.max_checkpoints + 1}).")
+        
+      if n_checkpoints > 2 * (self.max_checkpoints + 1):
+        raise RuntimeError(f"The amount of checkpoints in {self.save_path} ({n_checkpoints}) " + \
+                           f"exceeds double the max ({self.max_checkpoints + 1}).")
         
   def save_checkpoint(self, filename):
     checkpoint = {
@@ -424,15 +445,15 @@ def main():
                       help='Amount of update steps between each visualisation of test melspecs and attention matrices.')
   parser.add_argument('--max-test-batches', type=int, default=100, metavar='INT',
                       help='Max nr. of batches to calculate the test loss over')
-  parser.add_argument('--tensorboard-dir', type=str, default=None, metavar='STR',
-                      help='Directory to store Tensorboard logs in. Defaults to `./tensorboard/{--model-class}`.')
-  parser.add_argument('--checkpoint-dir', type=str, default=None, metavar='STR',
-                      help='Directory to store checkpoints in. Defaults to `train/checkpoints/{--model-class}/{<datetime>}`. ' + \
-                            'Where <datetime> is the date and time at script execution. Checkpoints include both model and optimizer params.')
+  parser.add_argument('--run-dir', type=str, default=None, metavar='STR',
+                      help='Directory to store run data in. Includes both Tensorboard logs and checkpoints. ' + \
+                           'Defaults to `Kenku/train/runs/{--model-class}/{<datetime>}`. ' + \
+                           'Where <datetime> is the date and time at script execution. Checkpoints include both model and optimizer params.')
   parser.add_argument('--checkpoint-interval', type=int, default=500, metavar='INT',
                       help='Amount of update steps between each checkpoint.')
-  parser.add_argument('--checkpoint-max', type=int, default=20, metavar='INT',
-                      help='Maximum number of checkpoints saved on disk, FIFO.')
+  parser.add_argument('--checkpoint-max', type=int, default=6, metavar='INT',
+                      help='Maximum number of checkpoints saved on disk. One is reserved for the latest checkpoint. ' + \
+                           'The rest for the checkpoints with the lowest test loss.')
   parser.add_argument('--from-checkpoint', type=str, default=None, metavar='STR',
                       help='Path pointing to a checkpoint file. If specified, continue training from this checkpoint.')
   
@@ -450,6 +471,11 @@ def main():
   if n_args_sample_pairing == 1:
     args_dict['sample_pairing'] = args_dict['sample_pairing'][0]
   
+  
+  #=== Configs ===#
+  
+  print(f"\n===== Configs =====")
+  
   # Dataset Config
   dataset_config_keys = ['dataset_dir', 'min_samples', 'train_set_threshold', 'sample_pairing',
                          'no_downsample','preload_melspecs']
@@ -462,11 +488,18 @@ def main():
   
   # Training Config
   train_config_keys = ['epochs', 'learning_rate', 'adam_betas', 'batch_size', 'DAL_weight', 'DAL_weight_decay', 
-                       'test_interval', 'melspec_interval', 'max_test_batches', 'tensorboard_dir', 'checkpoint_dir', 'checkpoint_interval', 
+                       'test_interval', 'melspec_interval', 'max_test_batches', 'run_dir', 'checkpoint_interval', 
                        'checkpoint_max', 'from_checkpoint']
   train_config = create_config_dict(args_dict, train_config_keys, args.train_config_path)
   
+  print(f"Data Config:\n  {str(dataset_config).replace(', ', '\n  ')}\n\n" + \
+        f"Model Config:\n  {str(model_config).replace(', ', '\n  ')}\n\n" + \
+        f"Train Config:\n  {str(train_config).replace(', ', '\n  ')}")
+  
+  
   #=== Load/Create Datasets ===#
+  
+  print(f"\n===== Data =====")
   
   dataset_factory = ParallelDatasetFactory(dataset_dir = dataset_config['dataset_dir'])
   
@@ -489,6 +522,10 @@ def main():
   train_loader = DataLoader(train_set, **data_loader_kwargs)
   test_loader  = DataLoader(test_set,  **data_loader_kwargs)
   
+  print(f"Num train samples: {len(train_set)}\n" + \
+        f"Num test samples : {len(test_set)}\n\n" + \
+        f"Num train batches: {len(train_loader)}\n" + \
+        f"Num test batches:  {len(test_loader)} available | {train_config['max_test_batches']} max")
   
   #=== Initialize Model ===#
   
@@ -518,6 +555,8 @@ def main():
   #=== Load Checkpoint ===#
   
   if train_config['from_checkpoint']:
+    print(f"\n===== Checkpoint =====")
+    
     checkpoint_load_path = train_config['from_checkpoint']
     checkpoint = torch.load(checkpoint_load_path, map_location=device, weights_only=True)
     
@@ -526,15 +565,22 @@ def main():
     
     del(checkpoint)
     gc.collect()
+    
+    print(f"Loaded successfully from {train_config['from_checkpoint']}")
+    
+    for name, params in model.named_parameters():
+      print(f"  {name} | shape: {params.shape}")
   
   
   #=== Setup Checkpoint Manager ===#
-  
+
   timestamp = timestamp = datetime.now().strftime("%y-%m-%d_%H:%M:%S")
-  checkpoint_dir = train_config['checkpoint_dir']
+  run_dir = train_config['run_dir']
   
-  if not checkpoint_dir:
-    checkpoint_dir = os.path.join(current_file_dir, 'checkpoints', model_class, timestamp)
+  if run_dir:
+    checkpoint_dir = os.path.join(run_dir, 'checkpoints')
+  else:
+    checkpoint_dir = os.path.join(current_file_dir, 'runs', model_class, timestamp, 'checkpoints')
   
   if not os.path.exists(checkpoint_dir):
     os.makedirs(checkpoint_dir)
@@ -553,10 +599,10 @@ def main():
   
   #=== Setup Tensorboard Manager ===#
   
-  tensorboard_dir = train_config['tensorboard_dir']
-  
-  if not tensorboard_dir:
-    tensorboard_dir = os.path.join(current_file_dir, 'tensorboard', model_class, timestamp)
+  if run_dir:
+    tensorboard_dir = run_dir
+  else:
+    tensorboard_dir = os.path.join(current_file_dir, 'runs', model_class, timestamp)
   
   if not os.path.exists(tensorboard_dir):
     os.makedirs(tensorboard_dir)
@@ -583,6 +629,8 @@ def main():
                                     'train_config'  : train_config})
   
   #=== Start Training ===#
+  
+  print(f"\n===== Starting Training =====")
 
   train_model(model,
               optimizer,
