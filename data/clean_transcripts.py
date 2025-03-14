@@ -78,7 +78,7 @@ def process_transcripts(input_dir, output_dir):
 
 
 if __name__ == "__main__":
-  input_directory = "../Data/raw/VCTK-Corpus/txt"
-  output_directory = "../Data/processed/VCTK/transcript"
+  input_directory = "./raw/txt"
+  output_directory = "./processed/transcript"
 
   process_transcripts(input_directory, output_directory)
