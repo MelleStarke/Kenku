@@ -173,13 +173,15 @@ cython_debug/
 */checkpoints/*
 */plots/*
 */tensorboard/*
-train/data/*
-train/runs/*
+*/runs/*
 
 # Temp/Test files
 data/test_scaler.py
-*/temp\.*
+*/temp.*
 
 # VSCode/Codium stuff
 *.code-workspace
 .vscode
+
+# Habrok stuff
+*.out

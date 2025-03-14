@@ -25,7 +25,7 @@ from tqdm import tqdm
 
 # Local imports
 from data.load import ParallelDatasetFactory, ParallelMelspecDataset, collate_fn
-from data.util import save_config, load_config, recursive_to_device, recursive_map
+from data.util import save_config, load_config, config_to_str, recursive_to_device, recursive_map
 from kenku.modules import KameBlock
 from kenku.network import KenkuTeacher, stack_frames, unstack_frames, append_zero_frame
 
@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 # Get the full path to the directory containing the current file
 current_file_dir = Path(__file__).parent.resolve()
 logfile_path = os.path.join(current_file_dir, 'logs/train_model.log')
+os.makedirs(os.path.dirname(logfile_path), exist_ok=True)
 
 # Configure file handler
 logfile_handler = logging.FileHandler(logfile_path, mode = 'a')
@@ -102,14 +103,14 @@ class CheckpointManager:
         self.save_checkpoint(filename)
         
       # Ensure checkpoints get removed to prevent excessive data storage.
-      n_checkpoints = len([os.path.isfile(f) for f in os.path.listdir(self.save_path)])
+      n_checkpoints = len([os.path.isfile(f) for f in os.listdir(self.save_path)])
       
       if n_checkpoints > self.max_checkpoints + 1:
-        logger.warning(f"The amount of checkpoints in {self.save_path} ({n_checkpoints}) " + \
+        logger.warning(f"The amount of checkpoints in {self.save_path} ({n_checkpoints}) " 
                        f"exceeds the max ({self.max_checkpoints + 1}).")
         
       if n_checkpoints > 2 * (self.max_checkpoints + 1):
-        raise RuntimeError(f"The amount of checkpoints in {self.save_path} ({n_checkpoints}) " + \
+        raise RuntimeError(f"The amount of checkpoints in {self.save_path} ({n_checkpoints}) " 
                            f"exceeds double the max ({self.max_checkpoints + 1}).")
         
   def save_checkpoint(self, filename):
@@ -197,30 +198,8 @@ class TensorboardManager:
       
       self.model.train()
       
-  def write_config(self, config: dict, prefix=''):
-    """Recursively format a config dict as a string.
-
-    Args:
-        config (dict): Possibly nested config dictionary.
-        prefix (str, optional): Prefix used to correctly indent items. Defaults to ''.
-    """
-    lines = []
-    
-    for k, v in config.items():
-      if isinstance(v, dict):
-        lines.append(f"\n{prefix}{k}")
-        sub_prefix = f'\t{prefix}'
-        sub_config = self.write_config(v, prefix=sub_prefix)
-        lines.append(sub_config)
-        
-      else:
-        lines.append(f'{prefix}{k}: {v}')
-    
-    config_string = '\n'.join(lines)
-    
-    # Prefix only exists if this is a sub-function call
-    if prefix:
-      return config_string
+  def write_config(self, config: dict):
+    config_string = config_to_str(config)
     
     self.writer.add_text('config', config_string, global_step=0)
     
@@ -350,7 +329,7 @@ def train_model(model: nn.Module,
 
     running_loss = []
 
-    for batch_index, batch in tqdm(enumerate(train_loader), total=len(train_loader)):
+    for batch_index, batch in tqdm(enumerate(train_loader), total=len(train_loader), mininterval=5.):
       batch = recursive_to_device(batch, device)
       
       tensorboard_manager.inform(epoch, batch_index)
@@ -386,15 +365,17 @@ def main():
   
   parser.add_argument('--dataset-dir', type=str, default='../Data/processed/VCTK', metavar='STR',
                       help="Directory containing the 'melspec' and 'transcript' folders, and 'speaker_info.csv'.")
+  parser.add_argument('--n-cores', type=int, default=None, metavar='INT',
+                      help="Nr. of cores used for parallelization by the DataLoader. Defaults to os.cpu_count().")
   parser.add_argument('--min-samples', type=int, default=8, metavar='INT',
                       help='Minimum number of samples for a transcript to be included in the train-/testset.')
   parser.add_argument('--train-set-threshold', type=int, default=10, metavar='INT',
-                      help='Cut-off point for transcript samples between train and test set. ' + \
+                      help='Cut-off point for transcript samples between train and test set. ' 
                             'All transcripts whose nr. of samples are below this threshold are part of the test set. All others of the train set.')
   parser.add_argument('--sample-pairing', nargs='?', type=str, default=['product', 'random'], metavar='STR',
-                      help='How samples are paired into source and target. Choose `product` for the Cartesian product. ' + \
-                            'Choose `random` to randomly pair a source sample to every target sample. ' + \
-                            'You can also specify it separately for the train and test set respectively. e.g. "--sample-pairing product random".')        
+                      help=('How samples are paired into source and target. Choose `product` for the Cartesian product. ' 
+                            'Choose `random` to randomly pair a source sample to every target sample. ' 
+                            'You can also specify it separately for the train and test set respectively. e.g. "--sample-pairing product random".'))
   parser.add_argument('--no-downsample', action='store_true',
                       help='Disable downsampling of sentence samples. Results in skewed data but may not be an issue.')
   parser.add_argument('--preload-melspecs', action='store_true',
@@ -437,7 +418,7 @@ def main():
   parser.add_argument('--DAL-weight', '-wda', type=float, default=2000., metavar='FLOAT',
                       help='Starting value of the diagonal attention loss weight.')
   parser.add_argument('--DAL-weight-decay', '-wdad', type=float, default=None, metavar='FLOAT',
-                      help='Decay rate for the diagonal attention loss weight. Defaults to 4 / epochs. ' + \
+                      help='Decay rate for the diagonal attention loss weight. Defaults to 4 / epochs. ' 
                             'Decay steps are done through wda <- wda * exp(-epoch * wda_decay).')
   parser.add_argument('--test-interval', type=int, default=200, metavar='INT',
                       help='Amount of update steps between every test loss calculation.')
@@ -446,38 +427,40 @@ def main():
   parser.add_argument('--max-test-batches', type=int, default=100, metavar='INT',
                       help='Max nr. of batches to calculate the test loss over')
   parser.add_argument('--run-dir', type=str, default=None, metavar='STR',
-                      help='Directory to store run data in. Includes both Tensorboard logs and checkpoints. ' + \
-                           'Defaults to `Kenku/train/runs/{--model-class}/{<datetime>}`. ' + \
-                           'Where <datetime> is the date and time at script execution. Checkpoints include both model and optimizer params.')
+                      help=('Directory to store run data in. Includes both Tensorboard logs and checkpoints. ' 
+                            'Defaults to `Kenku/train/runs/{--model-class}/{<datetime>}`. ' 
+                            'Where <datetime> is the date and time at script execution. Checkpoints include both model and optimizer params.'))
   parser.add_argument('--checkpoint-interval', type=int, default=500, metavar='INT',
                       help='Amount of update steps between each checkpoint.')
   parser.add_argument('--checkpoint-max', type=int, default=6, metavar='INT',
-                      help='Maximum number of checkpoints saved on disk. One is reserved for the latest checkpoint. ' + \
+                      help='Maximum number of checkpoints saved on disk. One is reserved for the latest checkpoint. ' 
                            'The rest for the checkpoints with the lowest test loss.')
   parser.add_argument('--from-checkpoint', type=str, default=None, metavar='STR',
                       help='Path pointing to a checkpoint file. If specified, continue training from this checkpoint.')
   
-  
-  #=== Merge Command Line and Config File Arguments ===#
-  
   args = parser.parse_args()
   args_dict = vars(args)
   
-  # Fix argument formatting
+  #=== Fix Argument Formatting ===#
+  
   n_args_sample_pairing = len(args_dict['sample_pairing'])
   assert 1 <= n_args_sample_pairing <= 2, \
-    f'Incorrect nr. of sample pairing arguments ({n_args_sample_pairing}: {args_dict['sample_pairing']}). Expected 1 or 2.'
+    f'Incorrect nr. of sample pairing arguments ({n_args_sample_pairing}: {args_dict["sample_pairing"]}). Expected 1 or 2.'
     
   if n_args_sample_pairing == 1:
     args_dict['sample_pairing'] = args_dict['sample_pairing'][0]
   
+  if args_dict['n_cores'] is None:
+    args_dict['n_cores'] = os.cpu_count()
   
   #=== Configs ===#
   
   print(f"\n===== Configs =====")
   
+  # Merge Command Line and Config File Arguments
+  
   # Dataset Config
-  dataset_config_keys = ['dataset_dir', 'min_samples', 'train_set_threshold', 'sample_pairing',
+  dataset_config_keys = ['dataset_dir', 'n_cores', 'min_samples', 'train_set_threshold', 'sample_pairing',
                          'no_downsample','preload_melspecs']
   dataset_config = create_config_dict(args_dict, dataset_config_keys, args.dataset_config_path)
   
@@ -492,10 +475,10 @@ def main():
                        'checkpoint_max', 'from_checkpoint']
   train_config = create_config_dict(args_dict, train_config_keys, args.train_config_path)
   
-  print(f"Data Config:\n  {str(dataset_config).replace(', ', '\n  ')}\n\n" + \
-        f"Model Config:\n  {str(model_config).replace(', ', '\n  ')}\n\n" + \
-        f"Train Config:\n  {str(train_config).replace(', ', '\n  ')}")
-  
+  print(config_to_str({'dataset_config': dataset_config,
+                       'model_config'  : model_config,
+                       'train_config'  : train_config}))
+
   
   #=== Load/Create Datasets ===#
   
@@ -514,7 +497,7 @@ def main():
   data_loader_kwargs = {
     'batch_size'  : train_config['batch_size'],
     'shuffle'     : True,
-    'num_workers' : os.cpu_count(),
+    'num_workers' : dataset_config['n_cores'],
     'collate_fn'  : collate_fn,
     'drop_last'   : True,
     'pin_memory'  : True
@@ -522,10 +505,10 @@ def main():
   train_loader = DataLoader(train_set, **data_loader_kwargs)
   test_loader  = DataLoader(test_set,  **data_loader_kwargs)
   
-  print(f"Num train samples: {len(train_set)}\n" + \
-        f"Num test samples : {len(test_set)}\n\n" + \
-        f"Num train batches: {len(train_loader)}\n" + \
-        f"Num test batches:  {len(test_loader)} available | {train_config['max_test_batches']} max")
+  print((f"Num train samples: {len(train_set)}\n" 
+         f"Num test samples : {len(test_set)}\n\n" 
+         f"Num train batches: {len(train_loader)}\n" 
+         f"Num test batches:  {len(test_loader)} available | {train_config['max_test_batches']} max"))
   
   #=== Initialize Model ===#
   

@@ -30,6 +30,28 @@ def merge_config(main_config: dict, sub_config: dict):
   """
   merged_config = {**sub_config, **main_config}
   return merged_config
+
+def config_to_str(config: dict, prefix=''):
+  """Recursively format a config dict as a string.
+
+  Args:
+      config (dict): Possibly nested config dictionary.
+      prefix (str, optional): Prefix used to correctly indent items. Defaults to ''.
+  """
+  lines = []
+  
+  for k, v in config.items():
+    if isinstance(v, dict):
+      lines.append(f"\n{prefix}{k}")
+      sub_prefix = f'\t{prefix}'
+      sub_config = config_to_str(v, prefix=sub_prefix)
+      lines.append(sub_config)
+      
+    else:
+      lines.append(f'{prefix}{k}: {v}')
+  
+  config_string = '\n'.join(lines)
+  return config_string
   
 def walk_files(root, extension):
   """

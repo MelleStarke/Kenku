@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 # Get the full path to the directory containing the current file
 current_file_dir = Path(__file__).parent.resolve()
 logfile_path = os.path.join(current_file_dir, 'logs/modules.log')
+os.makedirs(os.path.dirname(logfile_path), exist_ok=True)
 
 # Configure file handler
 logfile_handler = logging.FileHandler(logfile_path, mode = 'a')
@@ -57,9 +58,10 @@ class KameEmbedding(nn.Module):
   def forward(self, ages, genders, accents):
     batch_size = len(ages)
     
-    assert batch_size == len(genders) == len(accents), \
-      "Batch size mismatch between age, gender, and accent vector \n" +\
-     f"{(len(age), len(gender), len(accent))}"
+    assert batch_size == len(genders) == len(accents), (
+      f"Batch size mismatch between age, gender, and accent vector \n" 
+      f"{(len(age), len(gender), len(accent))}"
+    )
      
     ages       = ages.unsqueeze(-1)
     genders    = genders.unsqueeze(-1)

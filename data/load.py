@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 # Get the full path to the directory containing the current file
 current_file_dir = Path(__file__).parent.resolve()
 logfile_path = os.path.join(current_file_dir, 'logs/load.log')
+os.makedirs(os.path.dirname(logfile_path), exist_ok=True)
 
 # Configure file handler
 logfile_handler = logging.FileHandler(logfile_path, mode = 'a')
@@ -244,7 +245,7 @@ class ParallelDatasetFactory(SpeakerInfoMixin):
         self.transcript_dict[transcript].append(latest_sample_idx)
         
     if sorted(np.concatenate(list(self.transcript_dict.values())).tolist()) != sorted(list(range(len(self.samples)))):
-      raise ValueError(f"Enry indices do not line up. Sentence dict indices:\n{np.concatenate(list(self.transcript_dict.values()))}\n" +\
+      raise ValueError(f"Enry indices do not line up. Sentence dict indices:\n{np.concatenate(list(self.transcript_dict.values()))}\n" 
                        f"Actual indices:\n{list(range(len(self.samples)))}")
     
   def read_speaker_info(self, speaker_info_path):
@@ -311,9 +312,10 @@ class ParallelDatasetFactory(SpeakerInfoMixin):
       # Assert out of the above for loop to ensure downsampling wasn't done on a copied list but on the original.
       for sample_idxs in [train_transcript_dict.values(), test_transcript_dict.values()]:
         length_head = len(list(sample_idxs)[0])
-        assert all([len(idx_list) == length_head for idx_list in sample_idxs]), \
-          f"Downsampling failed. Expected all sample idx lists to have the same length " + \
+        assert all([len(idx_list) == length_head for idx_list in sample_idxs]), (
+          f"Downsampling failed. Expected all sample idx lists to have the same length " 
           f"but got lengths {list(map(len, sample_idxs))}."
+        )
         
     train_set = ParallelMelspecDataset(self.samples, 
                                        train_transcript_dict,
@@ -481,9 +483,9 @@ if __name__ == "__main__":
     
     for mini in range(3, 11):
       train_set, test_set = factory.train_test_split(mini, sample_pairing=('prod', 'rand'))
-      print(f"{mini}:\n  TRAIN: {len(train_set)} | {len(train_set.transcript_dict)}\n" + \
-                     f"  TEST:  {len(test_set)} | {len(test_set.transcript_dict)}" + \
-                     f"  prop: {len(test_set) / len(train_set):.4}")
+      print((f"{mini}:\n  TRAIN: {len(train_set)} | {len(train_set.transcript_dict)}\n" 
+                     f"  TEST:  {len(test_set)} | {len(test_set.transcript_dict)}" 
+                     f"  prop: {len(test_set) / len(train_set):.4}"))
     
 
   #=== Test/Validation Split ===#

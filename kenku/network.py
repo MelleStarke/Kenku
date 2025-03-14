@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 # Get the full path to the directory containing the current file
 current_file_dir = Path(__file__).parent.resolve()
 logfile_path = os.path.join(current_file_dir, 'logs/network.log')
+os.makedirs(os.path.dirname(logfile_path), exist_ok=True)
 
 # Configure file handler
 logfile_handler = logging.FileHandler(logfile_path, mode = 'a')

@@ -1,5 +1,6 @@
 import os
 import re
+import argparse
 
 from localspelling import convert_spelling
 
@@ -8,13 +9,13 @@ from tqdm import tqdm
 
 def standardize_text(text: str):
   """
-  Standardize the syntax of a given text.
+  Standardize the syntax of a given string.
   - Trim extra spaces
   - Ensure consistent punctuation (e.g., no spaces before punctuation)
   - Remove trailing parentheses
   - Remove quotation marks not part of contractions
   - Change British to American spelling
-  - Capitalize leading characters
+  - Set all characters to lowercase
   """
   # Remove leading/trailing whitespace and normalize internal spaces
   text = re.sub(r"\s+", " ", text.strip())
@@ -78,7 +79,14 @@ def process_transcripts(input_dir, output_dir):
 
 
 if __name__ == "__main__":
-  input_directory = "./raw/txt"
-  output_directory = "./processed/transcript"
+  parser = argparse.ArgumentParser()
+  parser.add_argument('src', type=str, metavar="STR",
+                      help='Source directory containing input text files.')
+  parser.add_argument('dst', type=str, metavar="STR",
+                      help='Destination directory for cleaned-up text files.')
+  
+  args = parser.parse_args()
+  input_directory = args.src
+  output_directory = args.dst
 
   process_transcripts(input_directory, output_directory)
