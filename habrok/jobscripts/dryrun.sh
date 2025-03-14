@@ -13,8 +13,10 @@
 
 module purge
 module load Python/3.11.5-GCCcore-13.2.0
-module load PyTorch/2.1.2-foss-2023a-CUDA-12.1.1
 source ~/venvs/py3.11.5/bin/activate
+
+module load PyTorch/2.1.2-foss-2023a-CUDA-12.1.1
+module load scikit-learn/1.3.1-gfbf-2023a
 
 cd ~/scratch
 
@@ -31,15 +33,15 @@ ls -a $TMPDIR >> log.txt
 echo $'\r' >> log.txt
 
 
-echo date >> log.txt
+date >> log.txt
 echo "Starting to move Kenku" >> log.txt
 echo $'\r' >> log.txt
 
 mv ~/Kenku $TMPDIR/Kenku >> log.txt
 echo $'\r' >> log.txt
 
-echo date
-echo "Finished moving Kenku"
+date >> log.txt
+echo "Finished moving Kenku" >> log.txt
 echo $'\r' >> log.txt
 
 echo "This is only in the terminal output"
