@@ -1,16 +1,15 @@
 import os
 import json
 
-from typing import Any, Callable
+from typing import Any, Callable, Tuple, List
 
-from torch import is_tensor
+from torch import Tensor, is_tensor, DeviceObjType
 
 
 def load_config(config_path: str):
   """
   Loads the config found in config_path as a dict.
   """
-  config = None
   with open(config_path, 'r') as file:
     config = json.load(file)
     
@@ -63,7 +62,19 @@ def walk_files(root, extension):
       if file.endswith(extension):
         yield os.path.join(path, file)
               
-def recursive_to_device(xs: Any, device):
+def recursive_to_device(xs: Union[Tensor, List, Tuple], device: DeviceObjType):
+  """Recursively sends all tensors in a container to provided device. Keeps same structure.
+
+  Args:
+      xs (Union[Tensor, List, Tuple]): Tensor or (nested) container of Tensors.
+      device (DeviceObjType): PyTorch device.
+
+  Raises:
+      IndexError: if xs isn't indexable.
+
+  Returns:
+      _type_: _description_
+  """
   if is_tensor(xs):
     return xs.to(device=device)
   
@@ -73,8 +84,7 @@ def recursive_to_device(xs: Any, device):
     return xs_type([recursive_to_device(x, device) for x in xs])
   
   except IndexError as e:
-    err_msg = f"{e}\nType {type(x)} isn't indexable"
-    raise IndexError(err_msg)
+    raise IndexError(f"Type {type(x)} isn't indexable.") from e
   
 def recursive_map(xs: Any, fn: Callable, cond = is_tensor):
   if cond(xs):
