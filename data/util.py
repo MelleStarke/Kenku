@@ -1,7 +1,7 @@
 import os
 import json
 
-from typing import Any, Callable, Tuple, List
+from typing import Any, Callable, Tuple, List, Union
 
 from torch import Tensor, is_tensor, DeviceObjType
 

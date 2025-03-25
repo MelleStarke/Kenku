@@ -299,32 +299,88 @@ class Attention(nn.Module):
   
 
 class AttentionPredictor(nn.Module):
-  pass
+  def __init__(self,
+               in_ch: int,
+               conv_ch: int,
+               embed_ch: int,
+               num_accents: int,
+               num_conv_layers: Optional[int] = 8,
+               kernel_size: Optional[int] = 5,
+               signal_segment_len: int = 80,
+               dilations: Optional[List[int]] = None,
+               dropout_rate: Optional[float] = 0.2):
+      super(AttentionPredictor, self).__init__()
+      
+      self.pre_decoder = KameBlock(in_ch, conv_ch, 1, embed_ch, num_accents,
+                                   num_conv_layers    = num_conv_layers,
+                                   kernel_size        = kernel_size,
+                                   num_output_streams = 3,  # One for each Gaussian parameter
+                                   signal_segment_len = signal_segment_len,
+                                   dilations          = dilations,
+                                   dropout_rate       = dropout_rate
+                                   )
+      
+  def forward(self, X: Tensor, speaker_info: Tuple[List[int], List[str], List[str]]):
+    batch_size = len(X)
+    
+    # Get Gaussian parameters from pre-decoder
+    mean_deltas, variances, scalars = self.pre_decoder(X, speaker_info)
+    
+    #=== Post-Process Gaussian Parameters ===#
+    mean_deltas = torch.abs(mean_deltas)
+    variances   = torch.clamp(variances, 0.001, 1.0)
+    scalars     = 0.2 * torch.sigmoid(scalars) + 0.8
+    
+    #=== Order Means ===#
+    n_frames = mean_deltas.shape[-1]
+    upper_triangular_mat = torch.triu(torch.ones(n_frames, n_frames, device=device))
+    means = torch.matmul(mean_deltas, upper_triangular_mat)  # Shape batch_size X out_ch(1) X n_frames
+
+    
     
 
 if __name__ == "__main__":
+  mode = [
+    'embed',
+    'att pred'
+  ][1]
+  
   batch_size  = 16
   in_ch       = 5
   conv_ch     = 6
   out_ch      = 3
   embed_ch    = 2
-  num_accents = 4
+  num_accents = 11
   timesteps   = 128
   
-  accents = ['English', 'Scottish', 'NorthernIrish', 'Irish', 'Indian', 'Welsh', 'American', 'Canadian', 'SouthAfrican', 'Australian', 'NewZealand']
+  if mode == 'embed':
+    
+    accents = ['English', 'Scottish', 'NorthernIrish', 'Irish', 'Indian', 'Welsh', 'American', 'Canadian', 'SouthAfrican', 'Australian', 'NewZealand']
+    
+    age_batch = np.random.randint(10, 80, 4).tolist()
+    gender_batch = np.random.choice(['m','f'], 4).tolist()
+    accent_batch = np.random.choice(accents, 4).tolist()
+    
+    [print(batch) for batch in [age_batch, gender_batch, accent_batch]]
+    
+    emb = KameEmbedding(6)
+    
+    e = emb(age_batch, gender_batch, accent_batch)
+    
+    print(e)
+    print(e.shape)
   
-  age_batch = np.random.randint(10, 80, 4).tolist()
-  gender_batch = np.random.choice(['m','f'], 4).tolist()
-  accent_batch = np.random.choice(accents, 4).tolist()
-  
-  [print(batch) for batch in [age_batch, gender_batch, accent_batch]]
-  
-  emb = KameEmbedding(6)
-  
-  e = emb(age_batch, gender_batch, accent_batch)
-  
-  print(e)
-  print(e.shape)
+  if mode == 'att pred':
+    att = AttentionPredictor(in_ch, conv_ch, embed_ch, num_accents=num_accents)
+    
+    X = torch.rand((batch_size, in_ch, timesteps), device=device)
+    info = (torch.tensor([20] * batch_size, device=device), 
+            torch.tensor([0]  * batch_size, device=device), 
+            torch.tensor([0]  * batch_size, device=device)
+    )
+    
+    Y = att(X, info)
+    
   
   # kb = KameBlock(in_ch, conv_ch, out_ch, embed_ch, num_accents)
   # X = torch.rand(batch_size, in_ch, timesteps, device=device)
