@@ -1,3 +1,4 @@
+#%%
 import os
 import numpy as np
 import logging
@@ -336,6 +337,9 @@ class AttentionPredictor(nn.Module):
     upper_triangular_mat = torch.triu(torch.ones(n_frames, n_frames, device=device))
     means = torch.matmul(mean_deltas, upper_triangular_mat)  # Shape batch_size X out_ch(1) X n_frames
 
+
+
+    return (mean_deltas, means, variances, scalars)
     
     
 
@@ -352,6 +356,8 @@ if __name__ == "__main__":
   embed_ch    = 2
   num_accents = 11
   timesteps   = 128
+  
+  #%%
   
   if mode == 'embed':
     
@@ -379,11 +385,31 @@ if __name__ == "__main__":
             torch.tensor([0]  * batch_size, device=device)
     )
     
-    Y = att(X, info)
+    #%%
+    speaker_info = info
+    batch_size = len(X)
     
-  
+    # Get Gaussian parameters from pre-decoder
+    mean_deltas, variances, scalars = att.pre_decoder(X, speaker_info)
+    
+    #=== Post-Process Gaussian Parameters ===#
+    mean_deltas = torch.abs(mean_deltas)
+    variances   = torch.clamp(torch.abs(variances), 0.001, 1.0)
+    scalars     = 0.2 * torch.sigmoid(scalars) + 0.8
+    
+    #=== Order Means ===#
+    n_frames = mean_deltas.shape[-1]
+    upper_triangular_mat = torch.triu(torch.ones(n_frames, n_frames, device=device))
+    means = torch.matmul(mean_deltas, upper_triangular_mat)  # Shape batch_size X out_ch(1) X n_frames
+
+    #%% 
+    tgt_frame_idxs = torch.arange(n_frames).view(1, 1, 1, n_frames).to(device)
+    unnorm_gauss_att = scalars[...,None] * torch.exp(-(tgt_frame_idxs - means[...,None])**2 / (2 * variances[...,None]**2))
+    
+    norm_gauss_att = unnorm_gauss_att / (unnorm_gauss_att.sum(dim=-1, keepdim=True) + 1e-6)
   # kb = KameBlock(in_ch, conv_ch, out_ch, embed_ch, num_accents)
   # X = torch.rand(batch_size, in_ch, timesteps, device=device)
   # Y = kb(X, [0] * 16)
   # print(Y)
   # print(Y.shape)
+# %%
