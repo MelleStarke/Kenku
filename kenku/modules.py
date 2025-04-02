@@ -329,7 +329,7 @@ class AttentionPredictor(nn.Module):
     
     #=== Post-Process Gaussian Parameters ===#
     mean_deltas = torch.abs(mean_deltas)
-    variances   = torch.clamp(variances, 0.001, 1.0)
+    variances   = torch.clamp(torch.abs(variances), 0.001, 1.0)
     scalars     = 0.2 * torch.sigmoid(scalars) + 0.8
     
     #=== Order Means ===#
@@ -337,25 +337,30 @@ class AttentionPredictor(nn.Module):
     upper_triangular_mat = torch.triu(torch.ones(n_frames, n_frames, device=device))
     means = torch.matmul(mean_deltas, upper_triangular_mat)  # Shape batch_size X out_ch(1) X n_frames
 
+    tgt_frame_idxs = torch.arange(n_frames).view(1, 1, 1, n_frames).to(device)
+    unnorm_gauss_att = scalars[...,None] * torch.exp(-(tgt_frame_idxs - means[...,None])**2 / (2 * variances[...,None]**2))
+    
+    norm_gauss_att = unnorm_gauss_att / (unnorm_gauss_att.sum(dim=-1, keepdim=True) + 1e-6)
 
-
-    return (mean_deltas, means, variances, scalars)
+    return norm_gauss_att
     
     
 
 if __name__ == "__main__":
+  import matplotlib.pyplot as plt
+  
   mode = [
     'embed',
     'att pred'
   ][1]
   
-  batch_size  = 16
+  batch_size  = 4
   in_ch       = 5
   conv_ch     = 6
   out_ch      = 3
   embed_ch    = 2
   num_accents = 11
-  timesteps   = 128
+  timesteps   = 256
   
   #%%
   
@@ -377,6 +382,45 @@ if __name__ == "__main__":
     print(e.shape)
   
   if mode == 'att pred':
+    def rand_tensor(*shape):
+      return torch.rand(shape, device=device)
+    
+    def rand_info(batch_size):
+      return (torch.rand(batch_size, device=device),
+              torch.randint(2, (batch_size,), device=device),
+              torch.randint(11, (batch_size,), device=device))
+      
+      
+    def da_loss(A, gauss_width_da=0.3):
+      batch_size, att_heads, n_frames, m_frames = A.shape
+      assert n_frames == m_frames, "Non-square att mat"
+      device = 'cuda'  
+
+      masked_gauss_dist_mat = torch.zeros((batch_size, n_frames, n_frames), dtype=A.dtype, device=device)
+      for bi in range(batch_size):
+        # Nr. of "masked on" frames. i.e. frames with mask=1
+        n_src_frames_on = n_frames
+        n_tgt_frames_on = m_frames
+        
+        src_lin_vec = torch.arange(n_frames, device=device) / n_src_frames_on
+        tgt_lin_vec = torch.arange(n_frames, device=device) / n_tgt_frames_on
+        
+        src_vec_vstack = src_lin_vec.repeat(n_frames, 1).T
+        tgt_vec_hstack = src_lin_vec.repeat(n_frames, 1)
+        
+        masked_gauss_dist_mat[bi,:,:] = 1. - torch.exp(-((src_vec_vstack - tgt_vec_hstack) ** 2) / (2. * gauss_width_da ** 2))
+        masked_gauss_dist_mat[bi, n_src_frames_on:, n_tgt_frames_on:] = 0.
+
+      # TODO: if all frames are masked on, then the formula below is larger than 
+      #       torch.mean(A * masked_gauss_dist_mat) by a factor of batch_size. 
+      #       Should this depend on batch_size? If not, can be fixed by ... / (n_tgt_frames_on * batch_size)
+      #  nvm: This is handled by summing the mask tensor in the original DA loss calc.
+      diag_att_loss = torch.sum(torch.mean(A * masked_gauss_dist_mat, 1)) / n_tgt_frames_on
+    
+      # print(A * masked_gauss_dist_mat)
+    
+      return diag_att_loss, masked_gauss_dist_mat
+    
     att = AttentionPredictor(in_ch, conv_ch, embed_ch, num_accents=num_accents)
     
     X = torch.rand((batch_size, in_ch, timesteps), device=device)
@@ -385,28 +429,24 @@ if __name__ == "__main__":
             torch.tensor([0]  * batch_size, device=device)
     )
     
+    A = att(X, info)
+    att.train()
+    n_frames = timesteps
+    
+    optimizer = torch.optim.Adam(att.parameters(),
+                                 lr    = 5e-5,
+                                 betas = (0.9, 0.999))
     #%%
-    speaker_info = info
-    batch_size = len(X)
-    
-    # Get Gaussian parameters from pre-decoder
-    mean_deltas, variances, scalars = att.pre_decoder(X, speaker_info)
-    
-    #=== Post-Process Gaussian Parameters ===#
-    mean_deltas = torch.abs(mean_deltas)
-    variances   = torch.clamp(torch.abs(variances), 0.001, 1.0)
-    scalars     = 0.2 * torch.sigmoid(scalars) + 0.8
-    
-    #=== Order Means ===#
-    n_frames = mean_deltas.shape[-1]
-    upper_triangular_mat = torch.triu(torch.ones(n_frames, n_frames, device=device))
-    means = torch.matmul(mean_deltas, upper_triangular_mat)  # Shape batch_size X out_ch(1) X n_frames
-
-    #%% 
-    tgt_frame_idxs = torch.arange(n_frames).view(1, 1, 1, n_frames).to(device)
-    unnorm_gauss_att = scalars[...,None] * torch.exp(-(tgt_frame_idxs - means[...,None])**2 / (2 * variances[...,None]**2))
-    
-    norm_gauss_att = unnorm_gauss_att / (unnorm_gauss_att.sum(dim=-1, keepdim=True) + 1e-6)
+    for _ in range(1024):
+      X = rand_tensor(batch_size, in_ch, n_frames)
+      info = rand_info(batch_size)
+      A = att(X, info)
+      
+      loss, tgt = da_loss(A)
+      
+      att.zero_grad()
+      loss.backward()
+      optimizer.step()
   # kb = KameBlock(in_ch, conv_ch, out_ch, embed_ch, num_accents)
   # X = torch.rand(batch_size, in_ch, timesteps, device=device)
   # Y = kb(X, [0] * 16)
