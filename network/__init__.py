@@ -10,7 +10,7 @@ from torch.nn.utils.parametrizations import weight_norm
 from typing import List, Tuple, Union, Optional
 from pathlib import Path
 
-from kenku.modules import KameBlock, Attention
+from network.modules import KameBlock, Attention
 
 from data.load import ParallelMelspecDataset, ParallelDatasetFactory, collate_fn
 
@@ -78,47 +78,6 @@ def unstack_frames(X, stack_factor):
   
   X = X.permute(0,2,1).reshape(batch_size, n_frames * sf, n_mels // sf).permute(0,2,1)
   return X
-
-def position_encoding(length, n_units):
-    """
-    Construct a sine-cosine positional encoding matrix similar to the one
-    used in the Transformer architecture.
-
-    Based on the Google tensor2tensor repository, this captures the notion
-    of relative position in a sequence, enabling the model to learn position
-    information.
-
-    Args:
-        length (int): Maximum sequence length.
-        n_units (int): Dimensionality of the encoding (channel dimension).
-
-    Returns:
-        np.ndarray: Position encoding array of shape (1, n_units, length).
-    """
-    channels = n_units
-    position = np.arange(length, dtype='f')
-    num_timescales = channels // 2
-
-    # Compute logarithmically spaced time scales
-    log_timescale_increment = (
-        np.log(10000.0 / 1.0) /
-        (float(num_timescales) - 1)
-    )
-    inv_timescales = 1.0 * np.exp(
-        np.arange(num_timescales).astype('f') * -log_timescale_increment
-    )
-
-    scaled_time = np.expand_dims(position, 1) * np.expand_dims(inv_timescales, 0)
-    
-    # Compute sine for one half and cosine for the other half of the channels
-    signal = np.concatenate(
-        [np.sin(scaled_time), np.cos(scaled_time)], axis=1
-    )
-    signal = np.expand_dims(signal, axis=0)  # shape: (1, length, n_units//2 * 2)
-
-    # Reorder dimensions to (1, n_units, length)
-    position_encoding_block = np.transpose(signal, (0, 2, 1))
-    return position_encoding_block
 
 
 class KenkuTeacher(nn.Module):
