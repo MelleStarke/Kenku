@@ -27,7 +27,7 @@ from tqdm import tqdm
 from data.load import ParallelDatasetFactory, ParallelMelspecDataset, collate_fn
 from data.util import save_config, load_config, config_to_str, recursive_to_device, recursive_map
 from network.modules import KameBlock
-from network import KenkuTeacher, stack_frames, unstack_frames, append_zero_frame
+from network import KenkuModel, KenkuTeacher, stack_frames, unstack_frames, append_zero_frame
 
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -292,7 +292,7 @@ def create_config_dict(args_dict: dict, keys: List[str], config_path: Optional[s
 ### Training ###
 ################
 
-def train_model(model: nn.Module,
+def train_model(model: KenkuModel,
                 optimizer: torch.optim.Optimizer, 
                 train_loader: DataLoader, 
                 test_loader: DataLoader, 

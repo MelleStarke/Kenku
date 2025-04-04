@@ -113,67 +113,14 @@ def apply_position_encoding(*mels: Union[Tensor, List[Tensor]], pos_weight = 1.0
 ### Loss Functions ###
 ######################
 
-def mse_loss(src_mel: Tensor, 
-             tgt_mel: Tensor, 
-             src_mask: Tensor, 
-             tgt_mask: Tensor, 
-             pos_weight = 1.0):
+def mse_loss(prd_mel: Tensor, 
+             tgt_mel: Tensor,
+             tgt_mask: Tensor):
+    
   device = src_mel.device
   dtype  = src_mel.dtype
 
-
-def calc_loss(self, src_mel, tgt_mel, src_mask, tgt_mask, src_info, tgt_info,
-              pos_weight = 1.0, gauss_width_da = 0.3):
-  
-  # TODO: Authors feed source mel into forward without appending zero frame,
-  #       despite prepending target zero frame. This supposedly doesn't throw an error?
-  #       For now I'll just append zero frame to source so the shapes match up.
-  device = src_mel.device
-  dtype  = src_mel.dtype
-  
-  sf = self.stack_factor
-  
-  # Stack frames along the mel-dimension, thereby reducing the frame-dimension.
-  if sf > 1:
-    src_mel  = stack_frames(src_mel, sf)
-    tgt_mel  = stack_frames(tgt_mel, sf)
-    
-    src_mask = src_mask[:,:,::sf]
-    tgt_mask = tgt_mask[:,:,::sf]
-    
-  tgt_mel = prepend_zero_frame(tgt_mel)
-  src_mel = append_zero_frame(src_mel) 
-  
-  batch_size, n_mels, n_frames = src_mel.shape
-  
-  # Construct sine and cosine functions evenly split in the mel-dimension, 
-  # logarithmically distributed, and sampled at n_frames. Repeat for whole batch.
-  src_pos = torch.from_numpy(position_encoding(n_frames, n_mels))\
-                            .to(device, dtype)\
-                            .repeat(batch_size, 1, 1)
-  tgt_pos = torch.from_numpy(position_encoding(n_frames, n_mels))\
-                            .to(device, dtype)\
-                            .repeat(batch_size, 1, 1)
-
-  # Nr. of sine and cosine waves in the position encoding.
-  # Equal to n_mels // 2 * 2.
-  n_waves = src_pos.shape[1]
-  # Scale position encodings by square root of n_mels. 
-  pos_scale = n_mels ** 0.5
-  
-  # Position encoded source spectrogram batch.
-  src_mel_pe = src_mel
-  src_mel_pe[:,:n_waves,:] = src_mel_pe[:,:n_waves,:] + src_pos / pos_scale * pos_weight 
-  tgt_mel_pe = tgt_mel
-  tgt_mel_pe[:,:n_waves,:] = tgt_mel_pe[:,:n_waves,:] + tgt_pos / pos_scale * pos_weight 
-  
-  # for b in range(batch_size):
-  #   plt.imshow(tgt_mel_pe[b,:,:])
-  #   plt.show()
-    
-  # exit()
-  
-  pred_mel_pe, pred_att = self(src_mel_pe, tgt_mel_pe, src_info, tgt_info)
+  n_mels = prd_mel.shape[1]
 
   #=== Masked MSE loss ===#
   
@@ -185,17 +132,38 @@ def calc_loss(self, src_mel, tgt_mel, src_mask, tgt_mask, src_info, tgt_info,
   masked_mel_dim_loss = torch.mean(masked_elem_loss, 1)
   # Calculate mean over only non-masked frames.
   masked_mse_loss = torch.sum(masked_mel_dim_loss) / torch.sum(tgt_mask)
-  mse_loss = masked_mse_loss
+  
+  return masked_mse_loss
 
 
 def mae_loss(X: Tensor, Y: Tensor):
   pass
 
-def distr_att_loss(A: Tensor):
+def auxil_att_loss(A: Tensor):
   pass
 
-def diag_att_loss(A: Tensor, tgt_variance = 0.3):
-  pass
+def diag_att_loss(A: Tensor, tgt_sigma = 0.3):
+  masked_gauss_dist_mat = torch.zeros((batch_size, n_frames, n_frames), dtype=pred_att.dtype, device=device)
+  for bi in range(batch_size):
+    # Nr. of "masked on" frames. i.e. frames with mask=1
+    n_src_frames_on = int(torch.sum(src_mask[bi,:,:]))
+    n_tgt_frames_on = int(torch.sum(tgt_mask[bi,:,:]))
+    
+    src_lin_vec = torch.arange(n_frames, device=device) / n_src_frames_on
+    tgt_lin_vec = torch.arange(n_frames, device=device) / n_tgt_frames_on
+    
+    src_vec_vstack = src_lin_vec.repeat(n_frames, 1).T
+    tgt_vec_hstack = src_lin_vec.repeat(n_frames, 1)
+    
+    masked_gauss_dist_mat[bi,:,:] = 1. - torch.exp(-((src_vec_vstack - tgt_vec_hstack) ** 2) \
+                              / (2. * gauss_width_da ** 2))
+    masked_gauss_dist_mat[bi, n_src_frames_on:, n_tgt_frames_on:] = 0.
+  
+  diag_att_loss = torch.sum(torch.mean(pred_att * masked_gauss_dist_mat, 1)) / torch.sum(tgt_mask)
+  
+  pred_att_np = pred_att.detach().cpu().clone().numpy()
+  
+  return mse_loss, diag_att_loss, pred_att_np
 
-def ortho_att_loss(A: Tensor, tgt_variance = 0.3):
+def ortho_att_loss(A: Tensor, tgt_sigma = 0.3):
   pass

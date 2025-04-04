@@ -14,6 +14,8 @@ from network.modules import KameBlock, Attention
 
 from data.load import ParallelMelspecDataset, ParallelDatasetFactory, collate_fn
 
+from train.loss import apply_position_encoding, mse_loss, mae_loss, distr_att_loss, diag_att_loss, ortho_att_loss
+
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -80,7 +82,10 @@ def unstack_frames(X, stack_factor):
   return X
 
 
-class KenkuTeacher(nn.Module):
+class KenkuModel(nn.Module):
+  pass
+
+class KenkuTeacher(KenkuModel):
   
   def __init__(self, 
                in_ch: int,
@@ -181,8 +186,12 @@ class KenkuTeacher(nn.Module):
     return student
     
   
-  def calc_loss(self, src_mel, tgt_mel, src_mask, tgt_mask, src_info, tgt_info,
-                pos_weight = 1.0, gauss_width_da = 0.3):
+  def calc_loss(self, src_mel, tgt_mel, src_mask, tgt_mask, src_info, tgt_info, 
+                main_loss_fn = 'mse', 
+                pos_weight = 1.0, 
+                dal_tgt_sigma = 0.3, 
+                dal_tgt_sigma = 0.3, 
+                lambdas = None):
     
     # TODO: Authors feed source mel into forward without appending zero frame,
     #       despite prepending target zero frame. This supposedly doesn't throw an error?
@@ -205,71 +214,38 @@ class KenkuTeacher(nn.Module):
     
     batch_size, n_mels, n_frames = src_mel.shape
     
-    # Construct sine and cosine functions evenly split in the mel-dimension, 
-    # logarithmically distributed, and sampled at n_frames. Repeat for whole batch.
-    src_pos = torch.from_numpy(position_encoding(n_frames, n_mels))\
-                              .to(device, dtype)\
-                              .repeat(batch_size, 1, 1)
-    tgt_pos = torch.from_numpy(position_encoding(n_frames, n_mels))\
-                              .to(device, dtype)\
-                              .repeat(batch_size, 1, 1)
-
-    # Nr. of sine and cosine waves in the position encoding.
-    # Equal to n_mels // 2 * 2.
-    n_waves = src_pos.shape[1]
-    # Scale position encodings by square root of n_mels. 
-    pos_scale = n_mels ** 0.5
+    # Position encoding
+    src_mel, tgt_mel = apply_position_encoding(src_mel, tgt_mel, pos_weight=pos_weight)
     
-    # Position encoded source spectrogram batch.
-    src_mel_pe = src_mel
-    src_mel_pe[:,:n_waves,:] = src_mel_pe[:,:n_waves,:] + src_pos / pos_scale * pos_weight 
-    tgt_mel_pe = tgt_mel
-    tgt_mel_pe[:,:n_waves,:] = tgt_mel_pe[:,:n_waves,:] + tgt_pos / pos_scale * pos_weight 
+    # Forward pass
+    pred_mel, att_matrix = self(src_mel, tgt_mel, src_info, tgt_info)
     
-    # for b in range(batch_size):
-    #   plt.imshow(tgt_mel_pe[b,:,:])
-    #   plt.show()
+    # Main loss term
+    main_loss_fn = {
+      'mse': mse_loss,
+      'mae': mae_loss
+    }[main_loss_fn.lower()]
+    
+    main_loss = main_loss_fn(pred_mel, tgt_mel, tgt_mask)
+    
+    # Auxiliary Attention Loss
+    aa_loss = auxil_att_loss(A)
+    # Diagonal Attention Loss
+    da_loss = diag_att_loss(A, tgt_sigma = dal_tgt_sigma)
+    # Orthogonal Attention Loss
+    oa_loss = ortho_att_loss(A, tgt_sigma = dal_tgt_sigma)
+    
+    # Combine
+    if lambdas is None:
+      lambdas = [1, 2000, 2000]
       
-    # exit()
+    total_loss = main_loss
     
-    pred_mel_pe, pred_att = self(src_mel_pe, tgt_mel_pe, src_info, tgt_info)
-
-    #=== Masked MSE loss ===#
-    
-    # Match mask shape to melspec shape.
-    full_tgt_mask = tgt_mask.repeat(1, n_mels, 1)
-    # Correct frame offsets, calc element-wise quadratic error, and mask error in padded frames.
-    masked_elem_loss = full_tgt_mask * (pred_mel_pe[:,:,:-1] - tgt_mel_pe[:,:,1:]) ** 2
-    # Calculate mean over only the mel-dimension.
-    masked_mel_dim_loss = torch.mean(masked_elem_loss, 1)
-    # Calculate mean over only non-masked frames.
-    masked_mse_loss = torch.sum(masked_mel_dim_loss) / torch.sum(tgt_mask)
-    mse_loss = masked_mse_loss
-    
-    #=== Attention Loss ===#
-    
-    masked_gauss_dist_mat = torch.zeros((batch_size, n_frames, n_frames), dtype=pred_att.dtype, device=device)
-    for bi in range(batch_size):
-      # Nr. of "masked on" frames. i.e. frames with mask=1
-      n_src_frames_on = int(torch.sum(src_mask[bi,:,:]))
-      n_tgt_frames_on = int(torch.sum(tgt_mask[bi,:,:]))
+    for lam, loss_val in zip(lambdas, [aa_loss, da_loss, oa_loss]):
+      total_loss += lam * loss_val
       
-      src_lin_vec = torch.arange(n_frames, device=device) / n_src_frames_on
-      tgt_lin_vec = torch.arange(n_frames, device=device) / n_tgt_frames_on
-      
-      src_vec_vstack = src_lin_vec.repeat(n_frames, 1).T
-      tgt_vec_hstack = src_lin_vec.repeat(n_frames, 1)
-      
-      masked_gauss_dist_mat[bi,:,:] = 1. - torch.exp(-((src_vec_vstack - tgt_vec_hstack) ** 2) \
-                                / (2. * gauss_width_da ** 2))
-      masked_gauss_dist_mat[bi, n_src_frames_on:, n_tgt_frames_on:] = 0.
+    return total_loss
     
-    diag_att_loss = torch.sum(torch.mean(pred_att * masked_gauss_dist_mat, 1)) / torch.sum(tgt_mask)
-    
-    pred_att_np = pred_att.detach().cpu().clone().numpy()
-    
-    return mse_loss, diag_att_loss, pred_att_np
-
 
 class KenkuStudent(nn.Module):
   pass

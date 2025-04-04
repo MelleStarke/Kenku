@@ -15,6 +15,8 @@ from typing import List, Tuple, Optional, Union, Dict
 
 from torch.utils.data import Dataset, DataLoader
 
+from network import stack_frames
+
 from itertools import product
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -456,7 +458,19 @@ class ParallelMelspecDataset(Dataset, SpeakerInfoMixin):
       test_set.transcript_dict[transcript] = sorted(test_idxs)
       
     return train_set, test_set
+  
+  def frame_stacked_collate_fn(self, stack_factor = 4):
     
+    def inner(batch):
+      src_mel, tgt_mel, src_mask, tgt_mask, src_info, tgt_info = collate_fn(batch)
+      
+      src_mel = stack_frames(src_mel, stack_factor)
+      tgt_mel = stack_frames(tgt_mel, stack_factor)
+      
+      src_mask = src_mask[:,:,::stack_factor]
+      tgt_mask = tgt_mask[:,:,::stack_factor]
+    
+    return inner
 
 if __name__ == "__main__":
   
