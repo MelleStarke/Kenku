@@ -14,7 +14,7 @@ from network.modules import KameBlock, Attention
 
 from data.load import ParallelMelspecDataset, ParallelDatasetFactory, collate_fn
 
-from train.loss import apply_position_encoding, mse_loss, mae_loss, distr_att_loss, diag_att_loss, ortho_att_loss
+from train.loss import mse_loss, mae_loss, distr_att_loss, diag_att_loss, ortho_att_loss
 
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -40,6 +40,11 @@ log_formatter = logging.Formatter(fmt     = '%(asctime)s (%(module)s:%(lineno)d)
                                   datefmt = '%m/%d/%Y %I:%M:%S')
 logfile_handler.setFormatter(log_formatter)
   
+
+###############
+### Utility ###
+###############
+
 
 def prepend_zero_frame(X, n_frames=1):
   if n_frames < 1:
@@ -81,6 +86,81 @@ def unstack_frames(X, stack_factor):
   X = X.permute(0,2,1).reshape(batch_size, n_frames * sf, n_mels // sf).permute(0,2,1)
   return X
 
+def apply_position_encoding(*mels: Union[Tensor, List[Tensor]], pos_weight = 1.0):
+    """
+    Construct a sine-cosine positional encoding matrix similar to the one
+    used in the Transformer architecture. And apply it to the tensors in mels.
+
+    Based on the Google tensor2tensor repository, this captures the notion
+    of relative position in a sequence, enabling the model to learn position
+    information.
+
+    Args:
+        mels(Union[Tensor, List[Tensor]]): singular or list of 3D tensors (batch x channels x frames)
+
+    Returns:
+        Union[Tensor, List[Tensor]]: original input mels with sine/cosine positional encoding applied
+    """
+    
+    # Handle singular or list of tensors
+    single_mel = False
+    
+    if is_tensor(mels):
+      mels = [mels]
+      single_mel = True
+    
+    # Ensure list of tensors with same shape
+    else:
+      assert isinstance(mels, list) and all([is_tensor(mel) for mel in mels]), f"Expected list of tensors but got {list(map(type, mels))}"
+      shape_head = mels[0].shape
+      assert all([mel.shape == shape_head for mel in mels]), f"Expected all mels to have the same shape, but got {[shape_head] + [mel.shape for mel in mels]}"
+    
+    
+    batch_size, channels, frames = mels[0].shape
+    position = np.arange(frames, dtype='f')
+    num_timescales = channels // 2
+
+    # Compute logarithmically spaced time scales
+    log_timescale_increment = (
+        np.log(10000.0 / 1.0) /
+        (float(num_timescales) - 1)
+    )
+    inv_timescales = 1.0 * np.exp(
+        np.arange(num_timescales).astype('f') * -log_timescale_increment
+    )
+
+    scaled_time = np.expand_dims(position, 1) * np.expand_dims(inv_timescales, 0)
+    
+    # Compute sine for one half and cosine for the other half of the channels
+    signal = np.concatenate(
+        [np.sin(scaled_time), np.cos(scaled_time)], axis=1
+    )
+    signal = np.expand_dims(signal, axis=0)  # shape: (1, length, n_units//2 * 2)
+
+    # Reorder dimensions to (1, n_units, length)
+    pos_encoding = np.transpose(signal, (0, 2, 1))
+    
+    #=== Apply Encoding to Mels ===#
+    
+    # Nr. of sine and cosine waves in the position encoding.
+    # Ensures even number.
+    n_waves = num_timescales * 2
+    # Scale position encodings by square root of the nr. of mel channels. 
+    pos_scale = channels ** 0.5
+    
+    # Apply position encoding
+    for mi, mel in enumerate(mels):
+      mels[mi][:,:n_waves,:] = mel[:,:n_waves,:] + pos_encoding / pos_scale * pos_weight
+      
+    if single_mel:
+      return mels[0]
+    
+    return mels
+
+
+##############
+### Models ###
+##############
 
 class KenkuModel(nn.Module):
   pass
@@ -210,7 +290,7 @@ class KenkuTeacher(KenkuModel):
       tgt_mask = tgt_mask[:,:,::sf]
       
     tgt_mel = prepend_zero_frame(tgt_mel)
-    src_mel = append_zero_frame(src_mel) 
+    src_mel = append_zero_frame(src_mel)
     
     batch_size, n_mels, n_frames = src_mel.shape
     
@@ -228,21 +308,21 @@ class KenkuTeacher(KenkuModel):
     
     main_loss = main_loss_fn(pred_mel, tgt_mel, tgt_mask)
     
-    # Auxiliary Attention Loss
+    # Auxiliary attention loss
     aa_loss = auxil_att_loss(A)
-    # Diagonal Attention Loss
+    # Diagonal attention loss
     da_loss = diag_att_loss(A, tgt_sigma = dal_tgt_sigma)
-    # Orthogonal Attention Loss
-    oa_loss = ortho_att_loss(A, tgt_sigma = dal_tgt_sigma)
+    # Orthogonal attention loss
+    oa_loss = ortho_att_loss(A, tgt_sigma = oal_tgt_sigma)
     
-    # Combine
+    # Combine loss terms
     if lambdas is None:
       lambdas = [1, 2000, 2000]
       
     total_loss = main_loss
     
-    for lam, loss_val in zip(lambdas, [aa_loss, da_loss, oa_loss]):
-      total_loss += lam * loss_val
+    for lam, loss_term in zip(lambdas, [aa_loss, da_loss, oa_loss]):
+      total_loss += lam * loss_term
       
     return total_loss
     

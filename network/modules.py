@@ -360,7 +360,7 @@ if __name__ == "__main__":
   out_ch      = 3
   embed_ch    = 2
   num_accents = 11
-  timesteps   = 256
+  timesteps   = 32
   
   #%%
   

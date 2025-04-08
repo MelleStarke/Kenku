@@ -33,82 +33,6 @@ log_formatter = logging.Formatter(fmt     = '%(asctime)s (%(module)s:%(lineno)d)
 logfile_handler.setFormatter(log_formatter)
 
 
-###############
-### Utility ###
-###############
-
-def apply_position_encoding(*mels: Union[Tensor, List[Tensor]], pos_weight = 1.0):
-    """
-    Construct a sine-cosine positional encoding matrix similar to the one
-    used in the Transformer architecture. And apply it to the tensors in mels.
-
-    Based on the Google tensor2tensor repository, this captures the notion
-    of relative position in a sequence, enabling the model to learn position
-    information.
-
-    Args:
-        mels(Union[Tensor, List[Tensor]]): singular or list of 3D tensors (batch x channels x frames)
-
-    Returns:
-        Union[Tensor, List[Tensor]]: original input mels with sine/cosine positional encoding applied
-    """
-    
-    # Handle singular or list of tensors
-    single_mel = False
-    
-    if is_tensor(mels):
-      mels = [mels]
-      single_mel = True
-    
-    # Ensure list of tensors with same shape
-    else:
-      assert isinstance(mels, list) and all([is_tensor(mel) for mel in mels]), f"Expected list of tensors but got {list(map(type, mels))}"
-      shape_head = mels[0].shape
-      assert all([mel.shape == shape_head for mel in mels]), f"Expected all mels to have the same shape, but got {[shape_head] + [mel.shape for mel in mels]}"
-    
-    
-    batch_size, channels, frames = mels[0].shape
-    position = np.arange(frames, dtype='f')
-    num_timescales = channels // 2
-
-    # Compute logarithmically spaced time scales
-    log_timescale_increment = (
-        np.log(10000.0 / 1.0) /
-        (float(num_timescales) - 1)
-    )
-    inv_timescales = 1.0 * np.exp(
-        np.arange(num_timescales).astype('f') * -log_timescale_increment
-    )
-
-    scaled_time = np.expand_dims(position, 1) * np.expand_dims(inv_timescales, 0)
-    
-    # Compute sine for one half and cosine for the other half of the channels
-    signal = np.concatenate(
-        [np.sin(scaled_time), np.cos(scaled_time)], axis=1
-    )
-    signal = np.expand_dims(signal, axis=0)  # shape: (1, length, n_units//2 * 2)
-
-    # Reorder dimensions to (1, n_units, length)
-    pos_encoding = np.transpose(signal, (0, 2, 1))
-    
-    #=== Apply Encoding to Mels ===#
-    
-    # Nr. of sine and cosine waves in the position encoding.
-    # Ensures even number.
-    n_waves = num_timescales * 2
-    # Scale position encodings by square root of the nr. of mel channels. 
-    pos_scale = channels ** 0.5
-    
-    # Apply position encoding
-    for mi, mel in enumerate(mels):
-      mels[mi][:,:n_waves,:] = mel[:,:n_waves,:] + pos_encoding / pos_scale * pos_weight
-      
-    if single_mel:
-      return mels[0]
-    
-    return mels
-  
-
 ######################
 ### Loss Functions ###
 ######################
@@ -116,9 +40,6 @@ def apply_position_encoding(*mels: Union[Tensor, List[Tensor]], pos_weight = 1.0
 def mse_loss(prd_mel: Tensor, 
              tgt_mel: Tensor,
              tgt_mask: Tensor):
-    
-  device = src_mel.device
-  dtype  = src_mel.dtype
 
   n_mels = prd_mel.shape[1]
 
@@ -136,34 +57,105 @@ def mse_loss(prd_mel: Tensor,
   return masked_mse_loss
 
 
-def mae_loss(X: Tensor, Y: Tensor):
-  pass
+def mae_loss(prd_mel: Tensor, 
+             tgt_mel: Tensor,
+             tgt_mask: Tensor):
+
+  n_mels = prd_mel.shape[1]
+
+  #=== Masked MSE loss ===#
+  
+  # Match mask shape to melspec shape.
+  full_tgt_mask = tgt_mask.repeat(1, n_mels, 1)
+  # Correct frame offsets, calc element-wise quadratic error, and mask error in padded frames.
+  masked_elem_loss = full_tgt_mask * (pred_mel_pe[:,:,:-1] - tgt_mel_pe[:,:,1:]) ** 2
+  # Calculate mean over only the mel-dimension.
+  masked_mel_dim_loss = torch.mean(masked_elem_loss, 1)
+  # Calculate mean over only non-masked frames.
+  masked_mae_loss = torch.sum(masked_mel_dim_loss) / torch.sum(tgt_mask)
+  
+  return masked_mae_loss
 
 def auxil_att_loss(A: Tensor):
   pass
 
-def diag_att_loss(A: Tensor, tgt_sigma = 0.3):
-  masked_gauss_dist_mat = torch.zeros((batch_size, n_frames, n_frames), dtype=pred_att.dtype, device=device)
+def masked_rbf_kernel_matrix(n_rows, n_cols, n_rows_on, n_cols_on, sigma):
+  """
+  Create a matrix using the RBF (Gaussian) kernel of shape [n_rows, n_cols].
+  
+  Args:
+      n_rows: Number of rows in the output matrix
+      n_cols: Number of columns in the output matrix
+      n_rows_on: How many of the rows are masked "on" (i.e. with 1)
+      n_cols_on: How many of the cols are masked "on" (i.e. with 1)
+      sigma: Bandwidth parameter that controls the width of the Gaussian
+      
+  Returns: 
+      A matrix where element [i,j] is computed using the RBF kernel
+  """
+  
+  row_indices = torch.arange(n_rows, device=device) / (n_rows_on if n_rows_on > 1 else 1)
+  col_indices = torch.arange(n_cols, device=device) / (n_cols_on if n_cols_on > 1 else 1)
+  
+  # Create coordinate matrices
+  row_mat = row_indices.view(-1, 1).expand(-1, n_cols)
+  col_mat = col_indices.view(1, -1).expand(n_rows, -1)
+  
+  # Calculate the RBF kernel matrix
+  # 1 - exp(-((x-y)²/(2σ²)))
+  masked_kernel_matrix = 1. - torch.exp(-((row_mat - col_mat) ** 2) / (2. * sigma ** 2))
+  # Mask
+  masked_kernel_matrix[n_rows_on:, n_cols_on:] = 0.
+  
+  return masked_kernel_matrix
+
+def diag_att_loss(A: Tensor, src_mask: Tensor, tgt_mask: Tensor, tgt_sigma = 0.3):
+  batch_size, n_src_frames, n_tgt_frames = A.shape
+  
+  target_distance_matrices = torch.zeros_like(A)
   for bi in range(batch_size):
     # Nr. of "masked on" frames. i.e. frames with mask=1
     n_src_frames_on = int(torch.sum(src_mask[bi,:,:]))
     n_tgt_frames_on = int(torch.sum(tgt_mask[bi,:,:]))
     
-    src_lin_vec = torch.arange(n_frames, device=device) / n_src_frames_on
-    tgt_lin_vec = torch.arange(n_frames, device=device) / n_tgt_frames_on
-    
-    src_vec_vstack = src_lin_vec.repeat(n_frames, 1).T
-    tgt_vec_hstack = src_lin_vec.repeat(n_frames, 1)
-    
-    masked_gauss_dist_mat[bi,:,:] = 1. - torch.exp(-((src_vec_vstack - tgt_vec_hstack) ** 2) \
-                              / (2. * gauss_width_da ** 2))
-    masked_gauss_dist_mat[bi, n_src_frames_on:, n_tgt_frames_on:] = 0.
+    target_distance_matrices[bi] = masked_rbf_kernel_matrix(n_rows=n_src_frames,
+                                                            n_cols=n_tgt_frames,
+                                                            n_rows_on=n_src_frames_on,
+                                                            n_cols_on=n_tgt_frames_on,
+                                                            sigma=tgt_sigma)
   
-  diag_att_loss = torch.sum(torch.mean(pred_att * masked_gauss_dist_mat, 1)) / torch.sum(tgt_mask)
+  # TODO: Why no division over the sum of the src frames?
+  diag_att_loss = torch.sum(torch.mean(A * target_distance_matrices, 1)) / torch.sum(tgt_mask)
   
-  pred_att_np = pred_att.detach().cpu().clone().numpy()
-  
-  return mse_loss, diag_att_loss, pred_att_np
+  return diag_att_loss
 
-def ortho_att_loss(A: Tensor, tgt_sigma = 0.3):
-  pass
+def ortho_att_loss(A: Tensor, src_mask: Tensor, tgt_mask: Tensor, tgt_sigma = 0.3):
+  batch_size, n_src_frames, _ = A.shape
+  
+  target_distance_matrices = torch.zeros(batch_size, n_src_frames, n_src_frames)
+  for bi in range(batch_size):
+    # Nr. of "masked on" frames. i.e. frames with mask=1
+    n_src_frames_on = int(torch.sum(src_mask[bi,:,:]))
+    n_tgt_frames_on = int(torch.sum(tgt_mask[bi,:,:]))
+    
+    target_distance_matrices[bi] = masked_rbf_kernel_matrix(n_rows=n_src_frames,
+                                                            n_cols=n_tgt_frames,
+                                                            n_rows_on=n_src_frames_on,
+                                                            n_cols_on=n_tgt_frames_on,
+                                                            sigma=tgt_sigma)
+  
+  ortho_att_loss = torch.sum(torch.mean(A.dot(A.T) * target_distance_matrices, 1)) / torch.sum(tgt_mask)
+  
+  return ortho_att_loss
+
+
+if __name__ == "__main__":
+  import matplotlib.pyplot as plt
+  
+  rbf_mat = masked_rbf_kernel_matrix(20, 60, 15, 40, 0.3)
+  print(rbf_mat.min(), rbf_mat.max())
+  print(rbf_mat.shape)
+  
+  
+  plt.imshow(rbf_mat)
+  plt.show()
