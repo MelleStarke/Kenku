@@ -281,7 +281,7 @@ class ConvGLU(nn.Module):
     return Y, padding
   
 
-class Attention(nn.Module):
+class ScaledDotProductAttention(nn.Module):
   def forward(self, K, V, Q):
     """Manual scaled dot product attention. Since the attention matrix should be passed for loss calculation.
 
@@ -307,25 +307,25 @@ class AttentionPredictor(nn.Module):
                num_accents: int,
                num_conv_layers: Optional[int] = 8,
                kernel_size: Optional[int] = 5,
-               signal_segment_len: int = 80,
+               signal_segment_len: int = 80,  # TODO: Currently unused
                dilations: Optional[List[int]] = None,
                dropout_rate: Optional[float] = 0.2):
       super(AttentionPredictor, self).__init__()
       
-      self.pre_decoder = KameBlock(in_ch, conv_ch, 1, embed_ch, num_accents,
-                                   num_conv_layers    = num_conv_layers,
-                                   kernel_size        = kernel_size,
-                                   num_output_streams = 3,  # One for each Gaussian parameter
-                                   signal_segment_len = signal_segment_len,
-                                   dilations          = dilations,
-                                   dropout_rate       = dropout_rate
-                                   )
+      self.encoder = KameBlock(in_ch, conv_ch, 1, embed_ch, num_accents,
+                               num_conv_layers    = num_conv_layers,
+                               kernel_size        = kernel_size,
+                               num_output_streams = 3,  # One for each Gaussian parameter
+                               signal_segment_len = signal_segment_len,
+                               dilations          = dilations,
+                               dropout_rate       = dropout_rate
+                               )
       
-  def forward(self, X: Tensor, speaker_info: Tuple[List[int], List[str], List[str]]):
-    batch_size = len(X)
+  def forward(self, mel_batch: Tensor, speaker_info: Tuple[List[int], List[str], List[str]]):
+    batch_size = len(mel_batch)
     
-    # Get Gaussian parameters from pre-decoder
-    mean_deltas, variances, scalars = self.pre_decoder(X, speaker_info)
+    # Get Gaussian parameters from the encoder
+    mean_deltas, variances, scalars = self.encoder(mel_batch, speaker_info)
     
     #=== Post-Process Gaussian Parameters ===#
     mean_deltas = torch.abs(mean_deltas)

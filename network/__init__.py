@@ -10,11 +10,9 @@ from torch.nn.utils.parametrizations import weight_norm
 from typing import List, Tuple, Union, Optional
 from pathlib import Path
 
-from network.modules import KameBlock, Attention
+from network.modules import KameBlock, ScaledDotProductAttention, AttentionPredictor
 
-from data.load import ParallelMelspecDataset, ParallelDatasetFactory, collate_fn
-
-from train.loss import mse_loss, mae_loss, distr_att_loss, diag_att_loss, ortho_att_loss
+from train.loss import mse_loss, mae_loss, auxil_att_loss, diag_att_loss, ortho_att_loss
 
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -163,8 +161,78 @@ def apply_position_encoding(*mels: Union[Tensor, List[Tensor]], pos_weight = 1.0
 ##############
 
 class KenkuModel(nn.Module):
-  pass
+  def __init__():
+    kame_block_kwargs = {
+      'num_conv_layers': num_conv_layers,
+      'kernel_size': kernel_size,
+      'dilations': dilations,
+      'dropout_rate': dropout_rate
+    }
+    
+    self.inference = False
+    
+    self.stack_factor = stack_factor
+    sf = stack_factor
+    
+    self.src_encoder = KameBlock(
+      in_ch * sf, conv_ch, att_ch, embed_ch, num_accents, num_output_streams=2, **kame_block_kwargs
+    ) 
+    self.tgt_encoder = KameBlock(
+      in_ch * sf, conv_ch, att_ch, embed_ch, num_accents, **kame_block_kwargs
+    )
+    self.attention = ScaledDotProductAttention()
+    
+    self.decoder = KameBlock(
+      att_ch, conv_ch, out_ch * sf, embed_ch, num_accents, **kame_block_kwargs
+    )
+    
+  def train(self):
+    self.inference = False
+    super(KenkuModel, self).train()
+    
+  def eval(self):
+    self.inference = False
+    super(KenkuModel, self).eval()
+  
+  def infer(self):
+    self.inference = True
+    super(KenkuModel, self).eval()
+    
+  def encode_inputs(self, src_mel, tgt_mel, src_info, tgt_info, stack = True):
+    # future_KV = torch.jit.fork(self.src_encoder,     (X_src, k_src))
+    # future_Q  = torch.jit.fork(self.tgt_encoder, (X_tgt, k_tgt))
 
+    # K, V = torch.jit.wait(future_KV)
+    # Q    = torch.jit.wait(future_Q)
+    
+    # Automatically warn and clear dynamic paddings if the batch sizes don't line up
+    # between the stored paddings and the input batch.
+    if self.src_encoder.paddings[0] is not None:
+      input_batch_size = len(src_mel)
+      padding_batch_size = len(self.src_encoder.paddings[0])
+      if input_batch_size != padding_batch_size:
+        logger.warning(f"Input batch size ({input_batch_size}) doesn't match padding batch size ({padding_batch_size}). Clearing paddings.")
+        self.clear_paddings()
+    
+    if stack:
+      src_mel = stack_frames(src_mel, self.stack_factor)
+      tgt_mel = stack_frames(tgt_mel, self.stack_factor)
+    
+    K, V = self.src_encoder(src_mel, src_info)
+    Q    = self.tgt_encoder(tgt_mel, tgt_info)
+    
+    return K, V, Q
+  
+  def clear_paddings(self):
+    self.src_encoder.clear_paddings()
+    self.tgt_encoder.clear_paddings()
+    self.decoder.clear_paddings()
+    
+    try:
+      self.attention_predictor.encoder.clear_paddings()
+    except AttributeError():
+      pass
+    
 class KenkuTeacher(KenkuModel):
   
   def __init__(self, 
@@ -180,66 +248,28 @@ class KenkuTeacher(KenkuModel):
                dropout_rate: Optional[float] = 0.2,
                stack_factor: int = 4
     ):
-    super(KenkuTeacher, self).__init__()
-      
+    super(KenkuTeacher, self).__init__(
+      in_ch, conv_ch, att_ch, out_ch, embed_ch, num_accents,              
+      num_conv_layers = num_conv_layers,
+      kernel_size     = kernel_size,
+      dilations       = dilations,
+      dropout_rate    = dropout_rate,
+      stack_factor    = stack_factor
+    )
+    
     self.init_args = (in_ch, conv_ch, att_ch, out_ch, embed_ch, num_accents)
-    self.init_kwargs = {
-      'num_conv_layers': num_conv_layers,
-      'kernel_size': kernel_size,
-      'dilations': dilations,
-      'dropout_rate': dropout_rate,
-    }
-    self.stack_factor = stack_factor
-    sf = stack_factor
+    self.init_kwargs = {**kame_block_kwargs, 'stack_factor': stack_factor}
     
-    self.encoder = KameBlock(
-      in_ch * sf, conv_ch, att_ch, embed_ch, num_accents, num_output_streams=2, **self.init_kwargs
-    ) 
-    self.pre_decoder = KameBlock(
-      in_ch * sf, conv_ch, att_ch, embed_ch, num_accents, **self.init_kwargs
-    )
-    self.attention = Attention()
-    
-    self.post_decoder = KameBlock(
-      att_ch, conv_ch, out_ch * sf, embed_ch, num_accents, **self.init_kwargs
-    )
-    
-    self.init_kwargs['stack_factor'] = stack_factor
-    self.main_loss_fn = torch.nn.MSELoss()
-    
-  def forward(self, X_src, X_tgt, k_src, k_tgt, stack=False):
-    # future_KV = torch.jit.fork(self.encoder,     (X_src, k_src))
-    # future_Q  = torch.jit.fork(self.pre_decoder, (X_tgt, k_tgt))
-
-    # K, V = torch.jit.wait(future_KV)
-    # Q    = torch.jit.wait(future_Q)
-    
-    if self.encoder.paddings[0] is not None:
-      input_batch_size = len(X_src)
-      padding_batch_size = len(self.encoder.paddings[0])
-      if input_batch_size != padding_batch_size:
-        logger.warning(f"Input batch size ({input_batch_size}) doesn't match padding batch size ({padding_batch_size}). Clearing paddings.")
-        self.clear_paddings()
-    
-    if stack:
-      X_src = stack_frames(X_src, self.stack_factor)
-      X_tgt = stack_frames(X_tgt, self.stack_factor)
-    
-    K, V = self.encoder(X_src, k_src)
-    Q    = self.pre_decoder(X_tgt, k_tgt)
+  def forward(self, src_mel, tgt_mel, src_info, tgt_info, stack=True):
+    K, V, Q = self.encode_inputs(src_mel, tgt_mel, src_info, tgt_info, stack=stack)
     
     R, A = self.attention(K, V, Q)
-    Y = self.post_decoder(R, k_tgt)
+    Y = self.decoder(R, k_tgt)
     
     if stack:
       Y = unstack_frames(Y, self.stack_factor)
     
     return Y, A
-  
-  def clear_paddings(self):
-    self.encoder.clear_paddings()
-    self.pre_decoder.clear_paddings()
-    self.post_decoder.clear_paddings()
   
   def to_student(self, student_kwargs):
     student = KenkuStudent(*self.init_kwargs, 
@@ -264,13 +294,12 @@ class KenkuTeacher(KenkuModel):
         param.requires_grad = False
     
     return student
-    
   
   def calc_loss(self, src_mel, tgt_mel, src_mask, tgt_mask, src_info, tgt_info, 
                 main_loss_fn = 'mse', 
                 pos_weight = 1.0, 
                 dal_tgt_sigma = 0.3, 
-                dal_tgt_sigma = 0.3, 
+                oal_tgt_sigma = 0.3, 
                 lambdas = None):
     
     # TODO: Authors feed source mel into forward without appending zero frame,
@@ -290,7 +319,7 @@ class KenkuTeacher(KenkuModel):
       tgt_mask = tgt_mask[:,:,::sf]
       
     tgt_mel = prepend_zero_frame(tgt_mel)
-    src_mel = append_zero_frame(src_mel)
+    # src_mel = append_zero_frame(src_mel)
     
     batch_size, n_mels, n_frames = src_mel.shape
     
@@ -328,11 +357,51 @@ class KenkuTeacher(KenkuModel):
     
 
 class KenkuStudent(nn.Module):
-  pass
+  def __init__(self, 
+               in_ch: int,
+               conv_ch: int,
+               att_ch: int,
+               out_ch: int,
+               embed_ch: int,
+               num_accents: int,
+               num_conv_layers: Optional[int] = 8,
+               kernel_size: Optional[int] = 5,
+               dilations: Optional[List[int]] = None,
+               dropout_rate: Optional[float] = 0.2,
+               stack_factor: int = 4):
+    
+    super(KenkuTeacher, self).__init__(
+      in_ch, conv_ch, att_ch, out_ch, embed_ch, num_accents,              
+      num_conv_layers = num_conv_layers,
+      kernel_size     = kernel_size,
+      dilations       = dilations,
+      dropout_rate    = dropout_rate,
+      stack_factor    = stack_factor
+    )
+    
+    self.attention_predictor = AttentionPredictor(
+      in_ch, conv_ch, embed_ch, num_accents,
+      num_conv_layers = num_conv_layers,
+      kernel_size     = kernel_size,
+      dilations       = dilations,
+      dropout_rate    = dropout_rate
+    )
+    
+  def forward(self, src_mel, tgt_mel, src_info, tgt_info, stack = True):
+    if self.inference:
+      pass
+    
+    else:
+      K, V, Q = self.encode_inputs(src_mel, tgt_mel, src_info, tgt_info, stack = stack)
+      
+      _, A = self.attention(K, V, Q)
+      
+      R = self.attention_predictor(src_mel, src_info)
 
 
 if __name__ == "__main__":
   from torch.utils.data import DataLoader
+  from data.load import ParallelMelspecDataset, ParallelDatasetFactory, collate_fn
   
   torch.set_default_device("cuda:0")
   

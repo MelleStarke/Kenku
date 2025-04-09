@@ -37,18 +37,12 @@ logfile_handler.setFormatter(log_formatter)
 ### Loss Functions ###
 ######################
 
-def mse_loss(prd_mel: Tensor, 
-             tgt_mel: Tensor,
+def mse_loss(pred_mel: Tensor, 
+             tgt_mel:  Tensor,
              tgt_mask: Tensor):
-
-  n_mels = prd_mel.shape[1]
-
-  #=== Masked MSE loss ===#
   
-  # Match mask shape to melspec shape.
-  full_tgt_mask = tgt_mask.repeat(1, n_mels, 1)
   # Correct frame offsets, calc element-wise quadratic error, and mask error in padded frames.
-  masked_elem_loss = full_tgt_mask * (pred_mel_pe[:,:,:-1] - tgt_mel_pe[:,:,1:]) ** 2
+  masked_elem_loss = tgt_mask * (pred_mel - tgt_mel) ** 2
   # Calculate mean over only the mel-dimension.
   masked_mel_dim_loss = torch.mean(masked_elem_loss, 1)
   # Calculate mean over only non-masked frames.
@@ -61,14 +55,8 @@ def mae_loss(prd_mel: Tensor,
              tgt_mel: Tensor,
              tgt_mask: Tensor):
 
-  n_mels = prd_mel.shape[1]
-
-  #=== Masked MSE loss ===#
-  
-  # Match mask shape to melspec shape.
-  full_tgt_mask = tgt_mask.repeat(1, n_mels, 1)
   # Correct frame offsets, calc element-wise quadratic error, and mask error in padded frames.
-  masked_elem_loss = full_tgt_mask * (pred_mel_pe[:,:,:-1] - tgt_mel_pe[:,:,1:]) ** 2
+  masked_elem_loss = full_tgt_mask * (pred_mel_pe - tgt_mel_pe).abs()
   # Calculate mean over only the mel-dimension.
   masked_mel_dim_loss = torch.mean(masked_elem_loss, 1)
   # Calculate mean over only non-masked frames.
@@ -79,9 +67,10 @@ def mae_loss(prd_mel: Tensor,
 def auxil_att_loss(A: Tensor):
   pass
 
-def masked_rbf_kernel_matrix(n_rows, n_cols, n_rows_on, n_cols_on, sigma):
+def masked_gauss_dist_matrix(n_rows, n_cols, n_rows_on, n_cols_on, sigma):
   """
-  Create a matrix using the RBF (Gaussian) kernel of shape [n_rows, n_cols].
+  Create a distance matrix using the RBF kernel.
+  Mask the bottom right rectangle of shape (n_rows - n_rows_on) x (n_cols - n_cols_on)
   
   Args:
       n_rows: Number of rows in the output matrix
@@ -91,7 +80,7 @@ def masked_rbf_kernel_matrix(n_rows, n_cols, n_rows_on, n_cols_on, sigma):
       sigma: Bandwidth parameter that controls the width of the Gaussian
       
   Returns: 
-      A matrix where element [i,j] is computed using the RBF kernel
+      A matrix where element [i,j] is computed using the inverse of the RBF kernel
   """
   
   row_indices = torch.arange(n_rows, device=device) / (n_rows_on if n_rows_on > 1 else 1)
@@ -105,7 +94,13 @@ def masked_rbf_kernel_matrix(n_rows, n_cols, n_rows_on, n_cols_on, sigma):
   # 1 - exp(-((x-y)²/(2σ²)))
   masked_kernel_matrix = 1. - torch.exp(-((row_mat - col_mat) ** 2) / (2. * sigma ** 2))
   # Mask
+  
+  # Conjunctive masking (only remove the bottom right rectangle)
   masked_kernel_matrix[n_rows_on:, n_cols_on:] = 0.
+  
+  # Disjunctive masking (only keep the top left rectangle)
+  # masked_kernel_matrix[n_rows_on:, :] = 0.
+  # masked_kernel_matrix[:, n_cols_on:] = 0.
   
   return masked_kernel_matrix
 
@@ -118,7 +113,7 @@ def diag_att_loss(A: Tensor, src_mask: Tensor, tgt_mask: Tensor, tgt_sigma = 0.3
     n_src_frames_on = int(torch.sum(src_mask[bi,:,:]))
     n_tgt_frames_on = int(torch.sum(tgt_mask[bi,:,:]))
     
-    target_distance_matrices[bi] = masked_rbf_kernel_matrix(n_rows=n_src_frames,
+    target_distance_matrices[bi] = masked_gauss_dist_matrix(n_rows=n_src_frames,
                                                             n_cols=n_tgt_frames,
                                                             n_rows_on=n_src_frames_on,
                                                             n_cols_on=n_tgt_frames_on,
@@ -138,7 +133,7 @@ def ortho_att_loss(A: Tensor, src_mask: Tensor, tgt_mask: Tensor, tgt_sigma = 0.
     n_src_frames_on = int(torch.sum(src_mask[bi,:,:]))
     n_tgt_frames_on = int(torch.sum(tgt_mask[bi,:,:]))
     
-    target_distance_matrices[bi] = masked_rbf_kernel_matrix(n_rows=n_src_frames,
+    target_distance_matrices[bi] = masked_gauss_dist_matrix(n_rows=n_src_frames,
                                                             n_cols=n_tgt_frames,
                                                             n_rows_on=n_src_frames_on,
                                                             n_cols_on=n_tgt_frames_on,
@@ -151,11 +146,64 @@ def ortho_att_loss(A: Tensor, src_mask: Tensor, tgt_mask: Tensor, tgt_sigma = 0.
 
 if __name__ == "__main__":
   import matplotlib.pyplot as plt
+  from data.load import ParallelDatasetFactory, collate_fn
+  from torch.utils.data import DataLoader
+  from network import append_zero_frame, prepend_zero_frame
   
-  rbf_mat = masked_rbf_kernel_matrix(20, 60, 15, 40, 0.3)
-  print(rbf_mat.min(), rbf_mat.max())
-  print(rbf_mat.shape)
+  mode = [
+    'attention_masking'
+  ][0]
+  
+  dataset_factory = ParallelDatasetFactory(dataset_dir = '../Data/processed/VCTK')
+  
+  train_set, test_set = dataset_factory.train_test_split(min_transcript_samples = 8,
+                                                         train_set_threshold    = 10,
+                                                         sample_pairing         = 'random',
+                                                         downsample             = True)
+
+  data_loader_kwargs = {
+    'batch_size'  : 6,
+    'shuffle'     : True,
+    'num_workers' : 12,
+    'collate_fn'  : collate_fn,
+    'drop_last'   : True,
+    'pin_memory'  : True
+  }
+  train_loader = DataLoader(train_set, **data_loader_kwargs)
+  test_loader  = DataLoader(test_set,  **data_loader_kwargs)
   
   
-  plt.imshow(rbf_mat)
-  plt.show()
+  if mode == 'attention_masking':
+    src_mel, tgt_mel, src_mask, tgt_mask, src_info, tgt_info = next(iter(test_loader))
+    tgt_mel = prepend_zero_frame(tgt_mel)
+    batch = src_mel, tgt_mel, src_mask, tgt_mask, src_info, tgt_info
+    [print(t.shape) if is_tensor(t) else print([e.shape for e in t]) for t in batch]
+
+    print(mse_loss(src_mel, tgt_mel[:,:,1:], tgt_mask))
+
+    rbf_mat = masked_rbf_kernel_matrix(20, 60, 15, 40, 0.3)
+    print(rbf_mat.min(), rbf_mat.max())
+    print(rbf_mat.shape)
+
+
+    plt.imshow(rbf_mat.detach().cpu().numpy())
+    plt.show()
+
+    N = src_mel.shape[2]
+    T = tgt_mel.shape[2]
+
+    print(f"N: {N} | T: {T}")
+
+    W = np.zeros((6,N,T))
+    for b in range(6):
+      Nb = int(torch.sum(src_mask[b,:,:]))
+      Tb = int(torch.sum(tgt_mask[b,:,:]))
+      nN = np.arange(0,N)/Nb
+      tT = np.arange(0,T)/Tb
+      nN_tiled = np.tile(nN[:,np.newaxis], (1,T))
+      tT_tiled = np.tile(tT[np.newaxis,:], (N,1))
+      W[b,:,:] = 1.0-np.exp(-np.square(nN_tiled - tT_tiled)/(2.0*0.3**2))
+      W[b,Nb:N,Tb:T] = 0.
+
+      plt.imshow(W[b], aspect='auto')
+      plt.show()
