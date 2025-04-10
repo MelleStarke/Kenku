@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
 
-from torch import Tensor
+from torch import Tensor, Generator
 from torch.nn.utils.parametrizations import weight_norm
 from typing import List, Tuple, Union, Optional
 from pathlib import Path
@@ -218,6 +218,7 @@ class KenkuModel(nn.Module):
       src_mel = stack_frames(src_mel, self.stack_factor)
       tgt_mel = stack_frames(tgt_mel, self.stack_factor)
     
+    # Encoding step of forward pass
     K, V = self.src_encoder(src_mel, src_info)
     Q    = self.tgt_encoder(tgt_mel, tgt_info)
     
@@ -227,11 +228,6 @@ class KenkuModel(nn.Module):
     self.src_encoder.clear_paddings()
     self.tgt_encoder.clear_paddings()
     self.decoder.clear_paddings()
-    
-    try:
-      self.attention_predictor.encoder.clear_paddings()
-    except AttributeError():
-      pass
     
 class KenkuTeacher(KenkuModel):
   
@@ -305,8 +301,6 @@ class KenkuTeacher(KenkuModel):
     # TODO: Authors feed source mel into forward without appending zero frame,
     #       despite prepending target zero frame. This supposedly doesn't throw an error?
     #       For now I'll just append zero frame to source so the shapes match up.
-    device = src_mel.device
-    dtype  = src_mel.dtype
     
     sf = self.stack_factor
     
@@ -368,7 +362,8 @@ class KenkuStudent(nn.Module):
                kernel_size: Optional[int] = 5,
                dilations: Optional[List[int]] = None,
                dropout_rate: Optional[float] = 0.2,
-               stack_factor: int = 4):
+               stack_factor: int = 4,
+               rng: Union[torch.Generator, int] = None):
     
     super(KenkuTeacher, self).__init__(
       in_ch, conv_ch, att_ch, out_ch, embed_ch, num_accents,              
@@ -384,20 +379,79 @@ class KenkuStudent(nn.Module):
       num_conv_layers = num_conv_layers,
       kernel_size     = kernel_size,
       dilations       = dilations,
-      dropout_rate    = dropout_rate
+      dropout_rate    = dropout_rate,
+      rng             = rng
     )
     
-  def forward(self, src_mel, tgt_mel, src_info, tgt_info, stack = True):
-    if self.inference:
-      pass
+  def forward(self, src_mel, src_info, tgt_info, stack = True):
+    pass
     
-    else:
-      K, V, Q = self.encode_inputs(src_mel, tgt_mel, src_info, tgt_info, stack = stack)
+  
+  def calc_loss(self, src_mel, tgt_mel, src_info, tgt_info, 
+                main_loss_fn = 'mse', 
+                pos_weight = 1.0, 
+                dal_tgt_sigma = 0.3, 
+                oal_tgt_sigma = 0.3, 
+                lambdas = None):
+    
+    sf = self.stack_factor
+    
+    # Stack frames along the mel-dimension, thereby reducing the frame-dimension.
+    if sf > 1:
+      src_mel  = stack_frames(src_mel, sf)
+      tgt_mel  = stack_frames(tgt_mel, sf)
       
-      _, A = self.attention(K, V, Q)
+      src_mask = src_mask[:,:,::sf]
+      tgt_mask = tgt_mask[:,:,::sf]
       
-      R = self.attention_predictor(src_mel, src_info)
+    tgt_mel = prepend_zero_frame(tgt_mel)
+    # src_mel = append_zero_frame(src_mel)
+    
+    batch_size, n_mels, n_frames = src_mel.shape
+    
+    # Position encoding
+    src_mel, tgt_mel = apply_position_encoding(src_mel, tgt_mel, pos_weight=pos_weight)
+    
+    # Manual forward pass
+    K, V, Q = self.encode_inputs(src_mel, tgt_mel, src_info, tgt_info, stack = False)
+    
+    # Real attention matrix from the Teacher's encoders
+    _, true_A = self.attention(K, V, Q)
+    
+    # Time-scaled sequence according to the attention predictor
+    R, pred_A, pred_means, pred_vars = self.attention_predictor(src_mel, tgt_info)
+    pred_mel = self.decoder(R, tgt_info)
+    
+    # Main loss term
+    main_loss_fn = {
+      'mse': mse_loss,
+      'mae': mae_loss
+    }[main_loss_fn.lower()]
+    
+    main_loss = main_loss_fn(pred_mel, tgt_mel, tgt_mask)
+    
+    # Auxiliary attention loss
+    aa_loss = auxil_att_loss(pred_means, pred_vars, true_A)
+    # Diagonal attention loss
+    da_loss = diag_att_loss(pred_A, tgt_sigma = dal_tgt_sigma)
+    # Orthogonal attention loss
+    oa_loss = ortho_att_loss(pred_A, tgt_sigma = oal_tgt_sigma)
+    
+    # Combine loss terms
+    if lambdas is None:
+      lambdas = [1, 2000, 2000]
+      
+    total_loss = main_loss
+    
+    for lam, loss_term in zip(lambdas, [aa_loss, da_loss, oa_loss]):
+      total_loss += lam * loss_term
+      
+    return total_loss
+    
 
+  def clear_paddings(self):
+    super(KenkuStudent, self).clear_paddings()
+    self.attention_predictor.encoder.clear_paddings()
 
 if __name__ == "__main__":
   from torch.utils.data import DataLoader

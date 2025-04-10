@@ -184,11 +184,6 @@ class KameBlock(nn.Module):
   def forward(self, X: Tensor, speaker_info: Tuple[List[int], List[str], List[str]]):
     batch_size, in_ch, timesteps = X.shape
     
-    # # Take class id list, add empty dim with unsqueeze, broadcast over timesteps.
-    # # Prepration for embedding layer pass and appending to input.
-    # class_tensor = torch.tensor(class_id, dtype=torch.int32).unsqueeze(1).to(device).repeat(1, timesteps)
-    # embedding    = self.embed_layer(class_tensor).permute(0, 2, 1)
-    
     if not self.training and self.paddings[0] is not None:
       input_batch_size = len(X)
       padding_batch_size = len(self.paddings[0])
@@ -309,10 +304,21 @@ class AttentionPredictor(nn.Module):
                kernel_size: Optional[int] = 5,
                signal_segment_len: int = 80,  # TODO: Currently unused
                dilations: Optional[List[int]] = None,
-               dropout_rate: Optional[float] = 0.2):
+               dropout_rate: Optional[float] = 0.2,
+               rng: Union[torch.Generator, int] = None):
       super(AttentionPredictor, self).__init__()
       
-      self.encoder = KameBlock(in_ch, conv_ch, 1, embed_ch, num_accents,
+      if rng is None:
+        self.rng = torch.Generator(device=device)
+      elif isinstance(rng, torch.Generator):
+        self.rng = rng
+      elif isinstance(rng, int):
+        self.rng = torch.Generator(device=device).manual_seed(rng)
+      else:
+        raise ValueError(f"Expected passed generator to be of type None, int, or torch.Generator. Got {type(rng)}.")
+      
+      # 1 extra input channel for the random noise
+      self.encoder = KameBlock(in_ch + 1, conv_ch, 1, embed_ch, num_accents,
                                num_conv_layers    = num_conv_layers,
                                kernel_size        = kernel_size,
                                num_output_streams = 3,  # One for each Gaussian parameter
@@ -321,11 +327,16 @@ class AttentionPredictor(nn.Module):
                                dropout_rate       = dropout_rate
                                )
       
-  def forward(self, mel_batch: Tensor, speaker_info: Tuple[List[int], List[str], List[str]]):
-    batch_size = len(mel_batch)
+      
+  def forward(self, src_mels: Tensor, tgt_info: Tuple[List[int], List[str], List[str]]):
+    # Add random noise channel to facilitate many-to-one mapping
+    batch_size, _, n_frames = len(src_mels)
+    # Gaussian noise with mean=0 and sigma=1
+    gauss_noise_ch = torch.normal(0, 1, (batch_size, 1, n_frames), generator=self.rng)
+    src_mels = torch.cat((gauss_noise_ch, src_mels), dim=1)
     
     # Get Gaussian parameters from the encoder
-    mean_deltas, variances, scalars = self.encoder(mel_batch, speaker_info)
+    mean_deltas, variances, scalars = self.encoder(src_mels, tgt_info)
     
     #=== Post-Process Gaussian Parameters ===#
     mean_deltas = torch.abs(mean_deltas)
@@ -342,7 +353,9 @@ class AttentionPredictor(nn.Module):
     
     norm_gauss_att = unnorm_gauss_att / (unnorm_gauss_att.sum(dim=-1, keepdim=True) + 1e-6)
 
-    return norm_gauss_att
+    timescaled_sequences = src_mels.dot(norm_gauss_att)
+    
+    return timescaled_sequences, norm_gauss_att, means, variances
     
     
 

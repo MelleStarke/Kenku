@@ -64,8 +64,8 @@ def mae_loss(prd_mel: Tensor,
   
   return masked_mae_loss
 
-def auxil_att_loss(A: Tensor):
-  pass
+def auxil_att_loss(pred_means: Tensor, pred_vars: Tensor, true_A: Tensor):
+  true_mean = 
 
 def masked_gauss_dist_matrix(n_rows, n_cols, n_rows_on, n_cols_on, sigma):
   """
