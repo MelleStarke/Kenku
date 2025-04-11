@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
 
-from torch import Tensor, Generator
+from torch import Tensor, is_tensor
 from torch.nn.utils.parametrizations import weight_norm
 from typing import List, Tuple, Union, Optional
 from pathlib import Path
@@ -109,13 +109,16 @@ def apply_position_encoding(*mels: Union[Tensor, List[Tensor]], pos_weight = 1.0
     
     # Ensure list of tensors with same shape
     else:
-      assert isinstance(mels, list) and all([is_tensor(mel) for mel in mels]), f"Expected list of tensors but got {list(map(type, mels))}"
-      shape_head = mels[0].shape
-      assert all([mel.shape == shape_head for mel in mels]), f"Expected all mels to have the same shape, but got {[shape_head] + [mel.shape for mel in mels]}"
+      assert isinstance(mels, (list, tuple)) and all([is_tensor(mel) for mel in mels]), f"Expected list of tensors but got {type(mels)(map(type, mels))}"
+      shape_head = mels[0].shape[:-1]
+      assert all([mel.shape[:-1] == shape_head for mel in mels]), f"Expected all mels to have the same batch size and mel channels, but got {[shape_head] + [mel.shape for mel in mels]}"
     
+    device = mels[0].device
+    dtype  = mels[0].dtype
     
-    batch_size, channels, frames = mels[0].shape
-    position = np.arange(frames, dtype='f')
+    batch_size, channels = mels[0].shape[:-1]
+    frames = max([frame_dim := mel.shape[-1] for mel in mels])
+    position = torch.arange(frames, device=device, dtype=dtype)
     num_timescales = channels // 2
 
     # Compute logarithmically spaced time scales
@@ -123,20 +126,20 @@ def apply_position_encoding(*mels: Union[Tensor, List[Tensor]], pos_weight = 1.0
         np.log(10000.0 / 1.0) /
         (float(num_timescales) - 1)
     )
-    inv_timescales = 1.0 * np.exp(
-        np.arange(num_timescales).astype('f') * -log_timescale_increment
+    inv_timescales = 1.0 * torch.exp(
+        torch.arange(num_timescales, device=device, dtype=dtype) * -log_timescale_increment
     )
 
-    scaled_time = np.expand_dims(position, 1) * np.expand_dims(inv_timescales, 0)
+    scaled_time = position.view(frames, 1) * inv_timescales.view(1, num_timescales)
     
     # Compute sine for one half and cosine for the other half of the channels
-    signal = np.concatenate(
-        [np.sin(scaled_time), np.cos(scaled_time)], axis=1
+    signal = torch.cat(
+        [torch.sin(scaled_time), torch.cos(scaled_time)], dim=1
     )
-    signal = np.expand_dims(signal, axis=0)  # shape: (1, length, n_units//2 * 2)
+    signal = signal.view(1, frames, num_timescales * 2)  # shape: (1, length, n_units//2 * 2)
 
     # Reorder dimensions to (1, n_units, length)
-    pos_encoding = np.transpose(signal, (0, 2, 1))
+    pos_encoding = torch.permute(signal, (0, 2, 1))
     
     #=== Apply Encoding to Mels ===#
     
@@ -148,7 +151,9 @@ def apply_position_encoding(*mels: Union[Tensor, List[Tensor]], pos_weight = 1.0
     
     # Apply position encoding
     for mi, mel in enumerate(mels):
-      mels[mi][:,:n_waves,:] = mel[:,:n_waves,:] + pos_encoding / pos_scale * pos_weight
+      # Correct for possibly inequal nr. of frames between mels
+      max_frames = mel.shape[-1]
+      mels[mi][:,:n_waves,:] = mel[:,:n_waves,:] + pos_encoding[...,:max_frames] / pos_scale * pos_weight
       
     if single_mel:
       return mels[0]
@@ -161,7 +166,21 @@ def apply_position_encoding(*mels: Union[Tensor, List[Tensor]], pos_weight = 1.0
 ##############
 
 class KenkuModel(nn.Module):
-  def __init__():
+  def __init__(self, 
+               in_ch: int,
+               conv_ch: int,
+               att_ch: int,
+               out_ch: int,
+               embed_ch: int,
+               num_accents: int,
+               num_conv_layers: Optional[int] = 8,
+               kernel_size: Optional[int] = 5,
+               dilations: Optional[List[int]] = None,
+               dropout_rate: Optional[float] = 0.2,
+               stack_factor: int = 4
+    ):
+    super(KenkuModel, self).__init__()
+    
     kame_block_kwargs = {
       'num_conv_layers': num_conv_layers,
       'kernel_size': kernel_size,
@@ -186,17 +205,17 @@ class KenkuModel(nn.Module):
       att_ch, conv_ch, out_ch * sf, embed_ch, num_accents, **kame_block_kwargs
     )
     
-  def train(self):
+  def train(self, *args, **kwargs):
     self.inference = False
-    super(KenkuModel, self).train()
+    super(KenkuModel, self).train(*args, **kwargs)
     
-  def eval(self):
+  def eval(self, *args, **kwargs):
     self.inference = False
-    super(KenkuModel, self).eval()
+    super(KenkuModel, self).eval(*args, **kwargs)
   
-  def infer(self):
+  def infer(self, *args, **kwargs):
     self.inference = True
-    super(KenkuModel, self).eval()
+    super(KenkuModel, self).eval(*args, **kwargs)
     
   def encode_inputs(self, src_mel, tgt_mel, src_info, tgt_info, stack = True):
     # future_KV = torch.jit.fork(self.src_encoder,     (X_src, k_src))
@@ -252,15 +271,22 @@ class KenkuTeacher(KenkuModel):
       dropout_rate    = dropout_rate,
       stack_factor    = stack_factor
     )
-    
+    kame_block_kwargs = {
+    }
     self.init_args = (in_ch, conv_ch, att_ch, out_ch, embed_ch, num_accents)
-    self.init_kwargs = {**kame_block_kwargs, 'stack_factor': stack_factor}
+    self.init_kwargs = {
+      'num_conv_layers': num_conv_layers,
+      'kernel_size'    : kernel_size,
+      'dilations'      : dilations,
+      'dropout_rate'   : dropout_rate,
+      'stack_factor'   : stack_factor
+    }
     
   def forward(self, src_mel, tgt_mel, src_info, tgt_info, stack=True):
     K, V, Q = self.encode_inputs(src_mel, tgt_mel, src_info, tgt_info, stack=stack)
     
     R, A = self.attention(K, V, Q)
-    Y = self.decoder(R, k_tgt)
+    Y = self.decoder(R, tgt_info)
     
     if stack:
       Y = unstack_frames(Y, self.stack_factor)
@@ -296,7 +322,7 @@ class KenkuTeacher(KenkuModel):
                 pos_weight = 1.0, 
                 dal_tgt_sigma = 0.3, 
                 oal_tgt_sigma = 0.3, 
-                lambdas = None):
+                loss_weights = None):
     
     # TODO: Authors feed source mel into forward without appending zero frame,
     #       despite prepending target zero frame. This supposedly doesn't throw an error?
@@ -321,7 +347,7 @@ class KenkuTeacher(KenkuModel):
     src_mel, tgt_mel = apply_position_encoding(src_mel, tgt_mel, pos_weight=pos_weight)
     
     # Forward pass
-    pred_mel, att_matrix = self(src_mel, tgt_mel, src_info, tgt_info)
+    pred_mel, A = self(src_mel, tgt_mel, src_info, tgt_info, stack=False)
     
     # Main loss term
     main_loss_fn = {
@@ -329,23 +355,23 @@ class KenkuTeacher(KenkuModel):
       'mae': mae_loss
     }[main_loss_fn.lower()]
     
-    main_loss = main_loss_fn(pred_mel, tgt_mel, tgt_mask)
+    # TODO: Intuition based fix, since tgt has a zero frame appended
+    #       and pred's frame dim is the same as tgt's
+    main_loss = main_loss_fn(pred_mel[...,1:], tgt_mel[...,:-1], tgt_mask)
     
-    # Auxiliary attention loss
-    aa_loss = auxil_att_loss(A)
     # Diagonal attention loss
-    da_loss = diag_att_loss(A, tgt_sigma = dal_tgt_sigma)
+    da_loss = diag_att_loss(A, src_mask, tgt_mask, tgt_sigma = dal_tgt_sigma)
     # Orthogonal attention loss
-    oa_loss = ortho_att_loss(A, tgt_sigma = oal_tgt_sigma)
+    oa_loss = ortho_att_loss(A, src_mask, tgt_sigma = oal_tgt_sigma)
     
     # Combine loss terms
-    if lambdas is None:
-      lambdas = [1, 2000, 2000]
+    if loss_weights is None:
+      loss_weights = [2000, 2000]
       
     total_loss = main_loss
     
-    for lam, loss_term in zip(lambdas, [aa_loss, da_loss, oa_loss]):
-      total_loss += lam * loss_term
+    for lw, loss_term in zip(loss_weights, [da_loss, oa_loss]):
+      total_loss += lw * loss_term
       
     return total_loss
     
@@ -387,14 +413,16 @@ class KenkuStudent(nn.Module):
     pass
     
   
-  def calc_loss(self, src_mel, tgt_mel, src_info, tgt_info, 
+  def calc_loss(self, src_mel, tgt_mel, src_mask, tgt_mask, src_info, tgt_info, 
                 main_loss_fn = 'mse', 
                 pos_weight = 1.0, 
                 dal_tgt_sigma = 0.3, 
                 oal_tgt_sigma = 0.3, 
-                lambdas = None):
+                loss_weights = None):
     
     sf = self.stack_factor
+    
+    #=== Preprocessing ===#
     
     # Stack frames along the mel-dimension, thereby reducing the frame-dimension.
     if sf > 1:
@@ -404,15 +432,16 @@ class KenkuStudent(nn.Module):
       src_mask = src_mask[:,:,::sf]
       tgt_mask = tgt_mask[:,:,::sf]
       
+    # Prepend zero frame as start-of-sequence token
     tgt_mel = prepend_zero_frame(tgt_mel)
-    # src_mel = append_zero_frame(src_mel)
     
     batch_size, n_mels, n_frames = src_mel.shape
     
     # Position encoding
     src_mel, tgt_mel = apply_position_encoding(src_mel, tgt_mel, pos_weight=pos_weight)
     
-    # Manual forward pass
+    #=== Forward Pass ===#
+    
     K, V, Q = self.encode_inputs(src_mel, tgt_mel, src_info, tgt_info, stack = False)
     
     # Real attention matrix from the Teacher's encoders
@@ -421,6 +450,8 @@ class KenkuStudent(nn.Module):
     # Time-scaled sequence according to the attention predictor
     R, pred_A, pred_means, pred_vars = self.attention_predictor(src_mel, tgt_info)
     pred_mel = self.decoder(R, tgt_info)
+    
+    #=== Loss Calculation ===#
     
     # Main loss term
     main_loss_fn = {
@@ -438,20 +469,21 @@ class KenkuStudent(nn.Module):
     oa_loss = ortho_att_loss(pred_A, tgt_sigma = oal_tgt_sigma)
     
     # Combine loss terms
-    if lambdas is None:
-      lambdas = [1, 2000, 2000]
+    if loss_weights is None:
+      loss_weights = [1, 2000, 2000]
       
     total_loss = main_loss
     
-    for lam, loss_term in zip(lambdas, [aa_loss, da_loss, oa_loss]):
-      total_loss += lam * loss_term
+    for lw, loss_term in zip(loss_weights, [aa_loss, da_loss, oa_loss]):
+      total_loss += lw * loss_term
       
     return total_loss
-    
 
   def clear_paddings(self):
     super(KenkuStudent, self).clear_paddings()
     self.attention_predictor.encoder.clear_paddings()
+
+
 
 if __name__ == "__main__":
   from torch.utils.data import DataLoader
@@ -475,10 +507,11 @@ if __name__ == "__main__":
   
   ch = 80
   sf = 1
-  model = KenkuTeacher(ch * sf, ch * sf, ch * sf, ch * sf, 12, 11)
+  model = KenkuTeacher(ch, ch, ch, ch, 12, 11)
+  model = KenkuTeacher.to_student()
   
-  src_mel, tgt_mel, _, _, src_info, tgt_info = next(iter(loader))
-  _ = model(src_mel, tgt_mel, src_info, tgt_info)
-  print(_[0].shape)
+  src_mel, tgt_mel, src_mask, tgt_mask, src_info, tgt_info = next(iter(loader))
+  loss = model.calc_loss(src_mel, tgt_mel, src_info, tgt_info)
+  print(loss)
   # loss = model.calc_loss(*batch, stack_factor=sf)
   

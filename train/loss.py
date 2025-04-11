@@ -64,8 +64,36 @@ def mae_loss(prd_mel: Tensor,
   
   return masked_mae_loss
 
-def auxil_att_loss(pred_means: Tensor, pred_vars: Tensor, true_A: Tensor):
-  true_mean = 
+def auxil_att_loss(pred_means: Tensor, pred_stds: Tensor, true_A: Tensor):
+  # TODO: Add masking
+  batch_size, n_src_frames, n_tgt_frames = true_A.shape
+  # Attention matrix is of shape N x M i.e. src_frames x tgt_frames
+  N, M = n_src_frames, n_tgt_frames
+  
+  device = true_A.device
+  dtype = true_A.dtype
+  
+  M_idxs = torch.arange(M, device=device, dtype=dtype).view(1,1,M)
+  
+  # Normalization constant
+  true_row_sums = true_A.sum(dim=-1)  # shape: (batch_size, N)
+  # Clip sum at small value to avoid division by 0
+  true_row_sums = torch.clamp(true_row_sums, min=1e-8)
+  
+  # Eq. 13 in source paper. Calculates means from true attention matrix.
+  true_means = (true_A * M_idxs).sum(dim=-1) / true_row_sums
+  
+  # Eq. 14 in source paper. Calculates variances from true attention matrix.
+  true_vars = (true_A * (M_idxs - true_means[...,None]) ** 2).sum(dim=-1) / true_row_sums
+  # Convert variance to std.
+  true_stds = torch.sqrt(true_vars)
+  
+  # MAE loss between true and predicted means and stds
+  mean_loss = (pred_means - true_means).abs()
+  std_loss  = (pred_stds - true_stds).abs()
+  
+  return (mean_loss + std_loss).mean()
+  
 
 def masked_gauss_dist_matrix(n_rows, n_cols, n_rows_on, n_cols_on, sigma):
   """
@@ -124,22 +152,22 @@ def diag_att_loss(A: Tensor, src_mask: Tensor, tgt_mask: Tensor, tgt_sigma = 0.3
   
   return diag_att_loss
 
-def ortho_att_loss(A: Tensor, src_mask: Tensor, tgt_mask: Tensor, tgt_sigma = 0.3):
+def ortho_att_loss(A: Tensor, src_mask: Tensor, tgt_sigma = 0.3):
+  device = A.device
   batch_size, n_src_frames, _ = A.shape
   
-  target_distance_matrices = torch.zeros(batch_size, n_src_frames, n_src_frames)
+  target_distance_matrices = torch.zeros(batch_size, n_src_frames, n_src_frames, device=device)
   for bi in range(batch_size):
     # Nr. of "masked on" frames. i.e. frames with mask=1
     n_src_frames_on = int(torch.sum(src_mask[bi,:,:]))
-    n_tgt_frames_on = int(torch.sum(tgt_mask[bi,:,:]))
     
     target_distance_matrices[bi] = masked_gauss_dist_matrix(n_rows=n_src_frames,
-                                                            n_cols=n_tgt_frames,
+                                                            n_cols=n_src_frames,
                                                             n_rows_on=n_src_frames_on,
-                                                            n_cols_on=n_tgt_frames_on,
+                                                            n_cols_on=n_src_frames,
                                                             sigma=tgt_sigma)
-  
-  ortho_att_loss = torch.sum(torch.mean(A.dot(A.T) * target_distance_matrices, 1)) / torch.sum(tgt_mask)
+  A_T = A.permute(0,2,1)
+  ortho_att_loss = torch.sum(torch.mean(A.matmul(A_T) * target_distance_matrices, dim=1)) / torch.sum(tgt_mask)
   
   return ortho_att_loss
 
@@ -151,26 +179,27 @@ if __name__ == "__main__":
   from network import append_zero_frame, prepend_zero_frame
   
   mode = [
-    'attention_masking'
-  ][0]
+    'attention_masking',
+    'auxil_loss'
+  ][1]
   
-  dataset_factory = ParallelDatasetFactory(dataset_dir = '../Data/processed/VCTK')
+  # dataset_factory = ParallelDatasetFactory(dataset_dir = '../Data/processed/VCTK')
   
-  train_set, test_set = dataset_factory.train_test_split(min_transcript_samples = 8,
-                                                         train_set_threshold    = 10,
-                                                         sample_pairing         = 'random',
-                                                         downsample             = True)
+  # train_set, test_set = dataset_factory.train_test_split(min_transcript_samples = 8,
+  #                                                        train_set_threshold    = 10,
+  #                                                        sample_pairing         = 'random',
+  #                                                        downsample             = True)
 
-  data_loader_kwargs = {
-    'batch_size'  : 6,
-    'shuffle'     : True,
-    'num_workers' : 12,
-    'collate_fn'  : collate_fn,
-    'drop_last'   : True,
-    'pin_memory'  : True
-  }
-  train_loader = DataLoader(train_set, **data_loader_kwargs)
-  test_loader  = DataLoader(test_set,  **data_loader_kwargs)
+  # data_loader_kwargs = {
+  #   'batch_size'  : 6,
+  #   'shuffle'     : True,
+  #   'num_workers' : 12,
+  #   'collate_fn'  : collate_fn,
+  #   'drop_last'   : True,
+  #   'pin_memory'  : True
+  # }
+  # train_loader = DataLoader(train_set, **data_loader_kwargs)
+  # test_loader  = DataLoader(test_set,  **data_loader_kwargs)
   
   
   if mode == 'attention_masking':
@@ -207,3 +236,22 @@ if __name__ == "__main__":
 
       plt.imshow(W[b], aspect='auto')
       plt.show()
+      
+  elif mode == 'auxil_loss':
+    N = 1024
+    true_A = torch.eye(N,N).view(1,N,N)
+    pred_means = torch.arange(N).view(1,1,N)
+    pred_stds  = torch.zeros(N).view(1,1,N)
+    
+    print(f"Test with ID matrix as attention matrix. Pred means: arange(N), pred stds: zeros. Expected: 0")
+    print(auxil_att_loss(pred_means, pred_stds, true_A))
+    
+    idx_mat = torch.arange(N).view(N,1) - torch.arange(N).view(1,N)
+    norm = torch.distributions.Normal(0,1)
+    true_A = torch.exp(norm.log_prob(idx_mat)).view(1,N,N)
+    
+    pred_means = torch.arange(N).view(1,1,N)
+    pred_stds  = torch.ones(N).view(1,1,N)
+    
+    print(f"Test with standard gaussian matrix. Pred means: arange(N), pred stds: ones. Expected: 0")
+    print(auxil_att_loss(pred_means, pred_stds, true_A))

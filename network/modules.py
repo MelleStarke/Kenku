@@ -329,18 +329,20 @@ class AttentionPredictor(nn.Module):
       
       
   def forward(self, src_mels: Tensor, tgt_info: Tuple[List[int], List[str], List[str]]):
-    # Add random noise channel to facilitate many-to-one mapping
-    batch_size, _, n_frames = len(src_mels)
-    # Gaussian noise with mean=0 and sigma=1
-    gauss_noise_ch = torch.normal(0, 1, (batch_size, 1, n_frames), generator=self.rng)
+    batch_size, _, n_frames = src_mels.shape
+    device = src_mels.device
+    dtype  = src_mels.dtype
+    
+    # Add Gaussian noise channel (mean=0, std=1) to facilitate many-to-one mapping
+    gauss_noise_ch = torch.normal(0, 1, (batch_size, 1, n_frames), generator=self.rng, device=device, dtype=dtype)
     src_mels = torch.cat((gauss_noise_ch, src_mels), dim=1)
     
     # Get Gaussian parameters from the encoder
-    mean_deltas, variances, scalars = self.encoder(src_mels, tgt_info)
+    mean_deltas, stds, scalars = self.encoder(src_mels, tgt_info)
     
     #=== Post-Process Gaussian Parameters ===#
     mean_deltas = torch.abs(mean_deltas)
-    variances   = torch.clamp(torch.abs(variances), 0.001, 1.0)
+    stds        = torch.clamp(torch.abs(stds), 0.001, 1.0)
     scalars     = 0.2 * torch.sigmoid(scalars) + 0.8
     
     #=== Order Means ===#
@@ -348,14 +350,14 @@ class AttentionPredictor(nn.Module):
     upper_triangular_mat = torch.triu(torch.ones(n_frames, n_frames, device=device))
     means = torch.matmul(mean_deltas, upper_triangular_mat)  # Shape batch_size X out_ch(1) X n_frames
 
-    tgt_frame_idxs = torch.arange(n_frames).view(1, 1, 1, n_frames).to(device)
-    unnorm_gauss_att = scalars[...,None] * torch.exp(-(tgt_frame_idxs - means[...,None])**2 / (2 * variances[...,None]**2))
+    tgt_frame_idxs   = torch.arange(n_frames).view(1, 1, n_frames).to(device)
+    unnorm_gauss_att = scalars[...,None] * torch.exp(-(tgt_frame_idxs - means[...,None])**2 / (2 * stds[...,None]**2))
     
     norm_gauss_att = unnorm_gauss_att / (unnorm_gauss_att.sum(dim=-1, keepdim=True) + 1e-6)
 
     timescaled_sequences = src_mels.dot(norm_gauss_att)
     
-    return timescaled_sequences, norm_gauss_att, means, variances
+    return timescaled_sequences, norm_gauss_att, means, stds
     
     
 
