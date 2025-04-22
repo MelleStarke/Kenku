@@ -353,11 +353,10 @@ class AttentionPredictor(nn.Module):
     tgt_frame_idxs   = torch.arange(n_frames).view(1, 1, n_frames).to(device)
     unnorm_gauss_att = scalars[...,None] * torch.exp(-(tgt_frame_idxs - means[...,None])**2 / (2 * stds[...,None]**2))
     
-    norm_gauss_att = unnorm_gauss_att / (unnorm_gauss_att.sum(dim=-1, keepdim=True) + 1e-6)
-
-    timescaled_sequences = src_mels.dot(norm_gauss_att)
+    norm_gauss_att = unnorm_gauss_att / (unnorm_gauss_att.sum(dim=-1, keepdim=True) + 1e-8)
+    norm_gauss_att = norm_gauss_att.squeeze()  # Remove empty channel: B x 1 x N x M -> B x N x M
     
-    return timescaled_sequences, norm_gauss_att, means, stds
+    return norm_gauss_att, means, stds
     
     
 

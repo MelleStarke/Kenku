@@ -27,7 +27,7 @@ from tqdm import tqdm
 from data.load import ParallelDatasetFactory, ParallelMelspecDataset, collate_fn
 from data.util import save_config, load_config, config_to_str, recursive_to_device, recursive_map
 from network.modules import KameBlock
-from network import KenkuModel, KenkuTeacher, stack_frames, unstack_frames, append_zero_frame
+from network import KenkuModel, KenkuTeacher, KenkuStudent, stack_frames, unstack_frames, append_zero_frame
 
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -213,6 +213,9 @@ class TensorboardManager:
                             global_step = self.global_step)
   
   def record_test_loss(self):
+    is_student = isinstance(self.model, KenkuStudent)
+    loss_weights = [0.,0.,0.] if is_student else [0.,0.]
+    
     test_loss = 0.
     
     n_test_batches = min(len(self.test_loader), self.max_test_batches)
@@ -223,7 +226,7 @@ class TensorboardManager:
       
       batch = recursive_to_device(batch, device)
       
-      loss, _ = self.model.calc_loss(*batch, loss_weights=[0., 0.])
+      loss, _ = self.model.calc_loss(*batch, loss_weights=loss_weights)
       test_loss += loss.detach().cpu().item()
     
     test_loss /= n_test_batches
@@ -234,7 +237,15 @@ class TensorboardManager:
     self.checkpoint_manager.latest_test_loss = test_loss
 
   def record_test_melspecs(self):
-    pred_mel, attention = self.model(*self.img_batch, stack=True)
+    is_student = isinstance(self.model, KenkuStudent)
+    
+    if is_student:
+      src_mel, _, src_info, tgt_info = self.img_batch
+      model_input = src_mel, src_info, tgt_info
+    else:
+      model_input = self.img_batch
+    
+    pred_mel, attention = self.model(*model_input, stack=True)
     src_mel, tgt_mel, _, _ = self.img_batch
     
     # Send to checkpoint manager to get access to the actual numbers
@@ -302,6 +313,7 @@ def train_model(model: KenkuModel,
                 checkpoint_manager: CheckpointManager, 
                 tensorboard_manager: TensorboardManager,
                 
+                main_loss_fn: str       = 'mse',
                 epochs: int             = 10,
                 train_loss_interval     = 100,
                 DAL_weight: float       = 0.,
@@ -311,6 +323,7 @@ def train_model(model: KenkuModel,
   if DAL_weight_decay is None:
     DAL_weight_decay = 4 / epochs
     
+  is_student = isinstance(model, KenkuStudent)
 
   # Define set of src and tgt melspecs to be used as images in Tensorboard.
   # tb_img_batch will be fed into the network to visually assess performance.
@@ -329,6 +342,10 @@ def train_model(model: KenkuModel,
     print(f"===== Epoch {epoch} =====")
     # TODO: Maybe do this at the end of the epoch.
     DAL_weight = DAL_weight_init * np.exp(-epoch * DAL_weight_decay)
+    
+    loss_weights = [DAL_weight, DAL_weight]
+    if is_student:
+      loss_weights = [1, *loss_weights]
 
     running_loss = []
 
@@ -340,7 +357,7 @@ def train_model(model: KenkuModel,
 
       model.clear_paddings()
       # TODO: make stack_factor a param at init
-      loss, A = model.calc_loss(*batch, loss_weights=[DAL_weight, DAL_weight])
+      loss, A = model.calc_loss(*batch, main_loss_fn=main_loss_fn, loss_weights=loss_weights)
 
       model.zero_grad()
       loss.backward()
@@ -388,6 +405,8 @@ def main():
   
   parser.add_argument('--model-class', '-m', type=str, default='KenkuTeacher', metavar='STR',
                       help='Class of the model you wish to train: KenkuTeacher or KenkuStudent.')
+  parser.add_argument('--from-teacher', type=str, default=None, metavar='STR',
+                      help='Path to teacher checkpoint from which to create the student model.')
   parser.add_argument('--in-ch', type=int, default=80, metavar='INT',
                       help='Nr. of input (i.e. frequency) channels.')
   parser.add_argument('--conv-ch', type=int, default=128, metavar='INT',
@@ -413,6 +432,8 @@ def main():
                       help='Nr. of epochs over the dataset.')
   parser.add_argument('--batch-size', '-bs', type=int, default=32, metavar='INT',
                       help='Batch size.')
+  parser.add_argument('--main-loss', type=str, default='mse', metavar='STR',
+                      help='Main spectrogram loss function. MSE or MAE.')
   parser.add_argument('--learning-rate', '-lr', type=float, default=5e-5, metavar='FLOAT',
                       help='Learning rate.')
   parser.add_argument('--adam-betas', type=float, nargs=2, default=[0.9, 0.999],  metavar='FLOAT',
@@ -443,6 +464,7 @@ def main():
   args = parser.parse_args()
   args_dict = vars(args)
   
+  
   #=== Fix Argument Formatting ===#
   
   n_args_sample_pairing = len(args_dict['sample_pairing'])
@@ -454,6 +476,7 @@ def main():
   
   if args_dict['n_cores'] is None:
     args_dict['n_cores'] = os.cpu_count()
+  
   
   #=== Configs ===#
   
@@ -467,12 +490,12 @@ def main():
   dataset_config = create_config_dict(args_dict, dataset_config_keys, args.dataset_config_path)
   
   # Model Config
-  model_config_keys = ['model_class', 'in_ch', 'conv_ch', 'att_ch', 'out_ch', 
+  model_config_keys = ['model_class', 'from_teacher', 'in_ch', 'conv_ch', 'att_ch', 'out_ch', 
                        'embed_ch', 'num_accents', 'stack_factor']
   model_config = create_config_dict(args_dict, model_config_keys, args.model_config_path)
   
   # Training Config
-  train_config_keys = ['epochs', 'learning_rate', 'adam_betas', 'batch_size', 'DAL_weight', 'DAL_weight_decay', 
+  train_config_keys = ['epochs', 'main_loss', 'learning_rate', 'adam_betas', 'batch_size', 'DAL_weight', 'DAL_weight_decay', 
                        'test_interval', 'melspec_interval', 'max_test_batches', 'run_dir', 'checkpoint_interval', 
                        'checkpoint_max', 'from_checkpoint']
   train_config = create_config_dict(args_dict, train_config_keys, args.train_config_path)
@@ -512,6 +535,7 @@ def main():
          f"Num train batches: {len(train_loader)}\n" 
          f"Num test batches:  {len(test_loader)} available | {train_config['max_test_batches']} max"))
   
+  
   #=== Initialize Model ===#
   
   model_class = model_config['model_class'].lower().replace(' ', '')
@@ -524,10 +548,24 @@ def main():
     raise ValueError('Incorrect model class. Use `KenkuTeacher` or `KenkuStudent`.')
   
   model_init_args = model_config.copy()
-  for remove_key in ['model_class']:
+  for remove_key in ['model_class', 'from_teacher']:
     model_init_args.pop(remove_key)
     
   model = model(**model_init_args)
+  
+  
+  #=== Create Student from Teacher ===#
+  
+  if model_config['from_teacher']:
+    teacher_checkpoint_path = model_config['from_teacher']
+    teacher_checkpoint = torch.load(teacher_checkpoint_path, map_location=device, weights_only=True)
+  
+    model.load_teacher_state_dict(teacher_checkpoint['model'])
+    
+    del(teacher_checkpoint)
+    gc.collect()
+  
+    print(f"Successfully created student from teacher checkpoint at {teacher_checkpoint_path}")
   
   
   #=== Initialize Optimizer ===#
@@ -551,7 +589,7 @@ def main():
     del(checkpoint)
     gc.collect()
     
-    print(f"Loaded successfully from {train_config['from_checkpoint']}")
+    print(f"Loaded successfully from checkpoint at {train_config['from_checkpoint']}")
     
     for name, params in model.named_parameters():
       print(f"  {name} | shape: {params.shape}")
@@ -601,6 +639,7 @@ def main():
   
   tensorboard_manager.link_checkpoint_manager(checkpoint_manager)
   
+  
   #=== Write Config Files ===#
 
   # Write to checkpoint
@@ -613,6 +652,7 @@ def main():
                                     'model_config'  : model_config,
                                     'train_config'  : train_config})
   
+  
   #=== Start Training ===#
   
   print(f"\n===== Starting Training =====")
@@ -624,6 +664,7 @@ def main():
               checkpoint_manager,
               tensorboard_manager,
               
+              main_loss_fn     = train_config['main_loss'],
               epochs           = train_config['epochs'],
               DAL_weight       = train_config['DAL_weight'],
               DAL_weight_decay = train_config['DAL_weight_decay']

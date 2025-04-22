@@ -297,23 +297,7 @@ class KenkuTeacher(KenkuModel):
     student = KenkuStudent(*self.init_kwargs, 
                            **{**self.init_kwargs, **student_kwargs})
     
-    tea_dict = self.state_dict()
-    stu_dict = student.state_dict()
-    
-    tea_keys = list(tea_dict.keys())
-    
-    # Construct state dict from student state dict keys.
-    # Module weights are copied from the teacher if available,
-    # and copied from the student if not available.
-    state_dict = dict([(sk, tea_dict[sk]) if sk in tea_keys else (sk, stu_dict[sk])
-                       for sk in stu_dict.keys()])
-    
-    student.load_state_dict(state_dict)
-    
-    # Freeze copied weights.
-    for name, param in student.named_parameters():
-      if name in tea_keys:
-        param.requires_grad = False
+    student.load_teacher_state_dict(self.state_dict())
     
     return student
   
@@ -376,7 +360,7 @@ class KenkuTeacher(KenkuModel):
     return total_loss, A
     
 
-class KenkuStudent(nn.Module):
+class KenkuStudent(KenkuModel):
   def __init__(self, 
                in_ch: int,
                conv_ch: int,
@@ -391,7 +375,7 @@ class KenkuStudent(nn.Module):
                stack_factor: int = 4,
                rng: Union[torch.Generator, int] = None):
     
-    super(KenkuTeacher, self).__init__(
+    super(KenkuStudent, self).__init__(
       in_ch, conv_ch, att_ch, out_ch, embed_ch, num_accents,              
       num_conv_layers = num_conv_layers,
       kernel_size     = kernel_size,
@@ -401,7 +385,7 @@ class KenkuStudent(nn.Module):
     )
     
     self.attention_predictor = AttentionPredictor(
-      in_ch, conv_ch, embed_ch, num_accents,
+      in_ch * stack_factor, conv_ch, embed_ch, num_accents,
       num_conv_layers = num_conv_layers,
       kernel_size     = kernel_size,
       dilations       = dilations,
@@ -409,9 +393,38 @@ class KenkuStudent(nn.Module):
       rng             = rng
     )
     
-  def forward(self, src_mel, src_info, tgt_info, stack = True):
-    pass
+  def forward(self, src_mel, src_info, tgt_info, stack = True):   
+    if stack:
+      src_mel = stack_frames(src_mel, self.stack_factor)
+      
+    K, V = self.src_encoder(src_mel, src_info)
+    pred_A, _, _ = self.attention_predictor(src_mel, tgt_info)
     
+    R = V.matmul(pred_A)
+    Y = self.decoder(R, tgt_info)
+    
+    if stack:
+      Y = unstack_frames(Y, self.stack_factor)
+      
+    return Y, pred_A
+    
+  def load_teacher_state_dict(self, tea_dict: dict):
+    stu_dict = self.state_dict()
+    
+    tea_keys = list(tea_dict.keys())
+    
+    # Construct state dict from student state dict keys.
+    # Module weights are copied from the teacher if available,
+    # and copied from the student if not available.
+    state_dict = dict([(sk, tea_dict[sk]) if sk in tea_keys else (sk, stu_dict[sk])
+                       for sk in stu_dict.keys()])
+    
+    self.load_state_dict(state_dict)
+    
+    # Freeze copied weights.
+    for name, param in self.named_parameters():
+      if name in tea_keys:
+        param.requires_grad = False
   
   def calc_loss(self, src_mel, tgt_mel, src_mask, tgt_mask, src_info, tgt_info, 
                 main_loss_fn = 'mse', 
@@ -419,6 +432,9 @@ class KenkuStudent(nn.Module):
                 dal_tgt_sigma = 0.3, 
                 oal_tgt_sigma = 0.3, 
                 loss_weights = None):
+    
+    if loss_weights is not None:
+      assert len(loss_weights) == 3, f"Incorrect amount of loss weights. Expected 3, got {len(loss_weights)}."
     
     sf = self.stack_factor
     
@@ -432,8 +448,12 @@ class KenkuStudent(nn.Module):
       src_mask = src_mask[:,:,::sf]
       tgt_mask = tgt_mask[:,:,::sf]
       
+    # TODO: Removed this for compatibility sake, since appending it to src_mel for the AP
+    #       results in an M x M matrix instead of N x M. Might find a way to fix this later. 
+    #       For example: passing one of the two as a kwarg and making the gauss function
+    #       add or remove 1 frame.
     # Prepend zero frame as start-of-sequence token
-    tgt_mel = prepend_zero_frame(tgt_mel)
+    # tgt_mel = prepend_zero_frame(tgt_mel)
     
     batch_size, n_mels, n_frames = src_mel.shape
     
@@ -447,8 +467,11 @@ class KenkuStudent(nn.Module):
     # Real attention matrix from the Teacher's encoders
     _, true_A = self.attention(K, V, Q)
     
+    # TODO: prepend zero frame as start of sequence token?
     # Time-scaled sequence according to the attention predictor
-    R, pred_A, pred_means, pred_vars = self.attention_predictor(src_mel, tgt_info)
+    pred_A, pred_means, pred_vars = self.attention_predictor(src_mel, tgt_info)
+    
+    R = V.matmul(pred_A)
     pred_mel = self.decoder(R, tgt_info)
     
     #=== Loss Calculation ===#
@@ -464,9 +487,9 @@ class KenkuStudent(nn.Module):
     # Auxiliary attention loss
     aa_loss = auxil_att_loss(pred_means, pred_vars, true_A)
     # Diagonal attention loss
-    da_loss = diag_att_loss(pred_A, tgt_sigma = dal_tgt_sigma)
+    da_loss = diag_att_loss(pred_A, src_mask, tgt_mask, tgt_sigma = dal_tgt_sigma)
     # Orthogonal attention loss
-    oa_loss = ortho_att_loss(pred_A, tgt_sigma = oal_tgt_sigma)
+    oa_loss = ortho_att_loss(pred_A, src_mask, tgt_sigma = oal_tgt_sigma)
     
     # Combine loss terms
     if loss_weights is None:
@@ -477,7 +500,7 @@ class KenkuStudent(nn.Module):
     for lw, loss_term in zip(loss_weights, [aa_loss, da_loss, oa_loss]):
       total_loss += lw * loss_term
       
-    return total_loss
+    return total_loss, pred_A
 
   def clear_paddings(self):
     super(KenkuStudent, self).clear_paddings()
