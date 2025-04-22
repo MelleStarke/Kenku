@@ -167,7 +167,7 @@ def ortho_att_loss(A: Tensor, src_mask: Tensor, tgt_sigma = 0.3):
                                                             n_cols_on=n_src_frames,
                                                             sigma=tgt_sigma)
   A_T = A.permute(0,2,1)
-  ortho_att_loss = torch.sum(torch.mean(A.matmul(A_T) * target_distance_matrices, dim=1)) / torch.sum(tgt_mask)
+  ortho_att_loss = torch.sum(torch.mean(A.matmul(A_T) * target_distance_matrices, dim=1)) / torch.sum(src_mask)
   
   return ortho_att_loss
 

@@ -77,6 +77,7 @@ class CheckpointManager:
     self.filenames_heap = []
     
     self.latest_test_loss = np.inf
+    self.test_melspecs = None
     
   def inform(self, epoch: int, batch_index: int):
     if batch_index % self.interval == 0:
@@ -115,8 +116,9 @@ class CheckpointManager:
         
   def save_checkpoint(self, filename):
     checkpoint = {
-      'model'    : self.model.state_dict(),
-      'optimizer': self.optimizer.state_dict()
+      'model'        : self.model.state_dict(),
+      'optimizer'    : self.optimizer.state_dict(),
+      'test_melspecs': self.test_melspecs
     }
     checkpoint_path = os.path.join(self.save_path, filename)
     torch.save(checkpoint, checkpoint_path)
@@ -221,8 +223,7 @@ class TensorboardManager:
       
       batch = recursive_to_device(batch, device)
       
-      MSE_loss, DA_loss, A_np = self.model.calc_loss(*batch)
-      loss = MSE_loss
+      loss, _ = self.model.calc_loss(*batch, loss_weights=[0., 0.])
       test_loss += loss.detach().cpu().item()
     
     test_loss /= n_test_batches
@@ -234,8 +235,10 @@ class TensorboardManager:
 
   def record_test_melspecs(self):
     pred_mel, attention = self.model(*self.img_batch, stack=True)
-    
     src_mel, tgt_mel, _, _ = self.img_batch
+    
+    # Send to checkpoint manager to get access to the actual numbers
+    self.checkpoint_manager.test_melspecs = [src_mel, tgt_mel, pred_mel]
     
     n_frames_diff = pred_mel.shape[-1] - src_mel.shape[-1]
     src_mel = append_zero_frame(src_mel, n_frames=n_frames_diff)
@@ -337,8 +340,7 @@ def train_model(model: KenkuModel,
 
       model.clear_paddings()
       # TODO: make stack_factor a param at init
-      MSE_loss, DA_loss, A_np = model.calc_loss(*batch)
-      loss = MSE_loss + DA_loss * DAL_weight
+      loss, A = model.calc_loss(*batch, loss_weights=[DAL_weight, DAL_weight])
 
       model.zero_grad()
       loss.backward()

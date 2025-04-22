@@ -373,7 +373,7 @@ class KenkuTeacher(KenkuModel):
     for lw, loss_term in zip(loss_weights, [da_loss, oa_loss]):
       total_loss += lw * loss_term
       
-    return total_loss
+    return total_loss, A
     
 
 class KenkuStudent(nn.Module):
