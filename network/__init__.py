@@ -306,7 +306,8 @@ class KenkuTeacher(KenkuModel):
                 pos_weight = 1.0, 
                 dal_tgt_sigma = 0.3, 
                 oal_tgt_sigma = 0.3, 
-                loss_weights = None):
+                loss_weights = None,
+                as_components = False):
     
     # TODO: Authors feed source mel into forward without appending zero frame,
     #       despite prepending target zero frame. This supposedly doesn't throw an error?
@@ -347,6 +348,10 @@ class KenkuTeacher(KenkuModel):
     da_loss = diag_att_loss(A, src_mask, tgt_mask, tgt_sigma = dal_tgt_sigma)
     # Orthogonal attention loss
     oa_loss = ortho_att_loss(A, src_mask, tgt_sigma = oal_tgt_sigma)
+    
+    # Return as components if requested
+    if as_components:
+      return {'main loss': main_loss, 'da loss': da_loss, 'oa loss': oa_loss}, A
     
     # Combine loss terms
     if loss_weights is None:
@@ -431,7 +436,8 @@ class KenkuStudent(KenkuModel):
                 pos_weight = 1.0, 
                 dal_tgt_sigma = 0.3, 
                 oal_tgt_sigma = 0.3, 
-                loss_weights = None):
+                loss_weights = None,
+                as_components = False):
     
     if loss_weights is not None:
       assert len(loss_weights) == 3, f"Incorrect amount of loss weights. Expected 3, got {len(loss_weights)}."
@@ -490,6 +496,10 @@ class KenkuStudent(KenkuModel):
     da_loss = diag_att_loss(pred_A, src_mask, tgt_mask, tgt_sigma = dal_tgt_sigma)
     # Orthogonal attention loss
     oa_loss = ortho_att_loss(pred_A, src_mask, tgt_sigma = oal_tgt_sigma)
+    
+    # Return as components if requested
+    if as_components:
+      return {'main loss': main_loss, 'aa loss': aa_loss, 'da loss': da_loss, 'oa loss': oa_loss}, pred_A
     
     # Combine loss terms
     if loss_weights is None:

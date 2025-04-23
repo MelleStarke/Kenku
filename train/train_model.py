@@ -64,6 +64,20 @@ logfile_handler.setFormatter(log_formatter)
 ### Utility ###
 ###############
 
+class DummyManager:
+  def __init__(self, *args, **kwargs):
+    pass
+  
+  def inform(self, *args, **kwargs):
+    pass
+  
+  def link_checkpoint_manager(self, *args, **kwargs):
+    pass
+  
+  def record_train_loss(self, *args, **kwargs):
+    pass
+  
+
 class CheckpointManager:
   def __init__(self, model, optimizer, save_path, interval=100, max=10):
     self.model = model
@@ -214,9 +228,8 @@ class TensorboardManager:
   
   def record_test_loss(self):
     is_student = isinstance(self.model, KenkuStudent)
-    loss_weights = [0.,0.,0.] if is_student else [0.,0.]
     
-    test_loss = 0.
+    test_losses = None
     
     n_test_batches = min(len(self.test_loader), self.max_test_batches)
     
@@ -226,15 +239,21 @@ class TensorboardManager:
       
       batch = recursive_to_device(batch, device)
       
-      loss, _ = self.model.calc_loss(*batch, loss_weights=loss_weights)
-      test_loss += loss.detach().cpu().item()
+      loss_comps, _ = self.model.calc_loss(*batch, as_components=True)
+      
+      # Add to cumulative losses
+      if test_losses is None:
+        test_losses = {name: loss.detach().cpu().item() for name, loss in loss_comps.items()}
+      else:
+        test_losses = {name: cumloss + newloss.detach().cpu().item() 
+                       for ((name, cumloss), newloss) in zip(test_losses.items(), loss_comps.values())}
     
-    test_loss /= n_test_batches
-    self.writer.add_scalar('test loss',
-                            np.mean(test_loss),
-                            global_step = self.global_step)
+    test_losses = {name: loss / n_test_batches for name, loss in test_losses.items()}
+    for name, loss in test_losses.items():
+      self.writer.add_scalar('test loss/' + name, loss, global_step=self.global_step)
+
     
-    self.checkpoint_manager.latest_test_loss = test_loss
+    self.checkpoint_manager.latest_test_loss = test_losses['main loss']
 
   def record_test_melspecs(self):
     is_student = isinstance(self.model, KenkuStudent)
@@ -324,17 +343,6 @@ def train_model(model: KenkuModel,
     DAL_weight_decay = 4 / epochs
     
   is_student = isinstance(model, KenkuStudent)
-
-  # Define set of src and tgt melspecs to be used as images in Tensorboard.
-  # tb_img_batch will be fed into the network to visually assess performance.
-  tb_img_batch = next(iter(train_loader))
-  n_tb_imgs = min(3, len(tb_img_batch[0]))
-  # Remove mask tensors found at indices 2 and 3
-  tb_img_batch = [tb_img_batch[i] for i in [0,1,4,5]]
-  # Reduce the amount of melspecs for visualization
-  tb_img_batch = tuple([     batch_comp[:n_tb_imgs] if i < 2 
-                        else tuple([k[:n_tb_imgs]for k in batch_comp]) 
-                         for i, batch_comp in enumerate(tb_img_batch)])
 
   model.train()
 
@@ -460,6 +468,8 @@ def main():
                            'The rest for the checkpoints with the lowest test loss.')
   parser.add_argument('--from-checkpoint', type=str, default=None, metavar='STR',
                       help='Path pointing to a checkpoint file. If specified, continue training from this checkpoint.')
+  parser.add_argument('--no-log', action='store_true',
+                      help='Prevent the script from saving checkpoints and writing to the tensorboard directory.')
   
   args = parser.parse_args()
   args_dict = vars(args)
@@ -497,7 +507,7 @@ def main():
   # Training Config
   train_config_keys = ['epochs', 'main_loss', 'learning_rate', 'adam_betas', 'batch_size', 'DAL_weight', 'DAL_weight_decay', 
                        'test_interval', 'melspec_interval', 'max_test_batches', 'run_dir', 'checkpoint_interval', 
-                       'checkpoint_max', 'from_checkpoint']
+                       'checkpoint_max', 'from_checkpoint', 'no_log']
   train_config = create_config_dict(args_dict, train_config_keys, args.train_config_path)
   
   print(config_to_str({'dataset_config': dataset_config,
@@ -557,6 +567,7 @@ def main():
   #=== Create Student from Teacher ===#
   
   if model_config['from_teacher']:
+    print(f"\n===== Student from Teacher =====")
     teacher_checkpoint_path = model_config['from_teacher']
     teacher_checkpoint = torch.load(teacher_checkpoint_path, map_location=device, weights_only=True)
   
@@ -565,7 +576,7 @@ def main():
     del(teacher_checkpoint)
     gc.collect()
   
-    print(f"Successfully created student from teacher checkpoint at {teacher_checkpoint_path}")
+    print(f"Successfully created student from teacher checkpoint at {teacher_checkpoint_path}.")
   
   
   #=== Initialize Optimizer ===#
@@ -605,19 +616,17 @@ def main():
   else:
     checkpoint_dir = os.path.join(current_file_dir, 'runs', model_class, timestamp, 'checkpoints')
   
-  if not os.path.exists(checkpoint_dir):
+  if not os.path.exists(checkpoint_dir) and not train_config['no_log']:
     os.makedirs(checkpoint_dir)
   
-  checkpoint_manager = CheckpointManager(model, 
-                                         optimizer, 
-                                         checkpoint_dir,
-                                         interval = train_config['checkpoint_interval'],
-                                         max      = train_config['checkpoint_max'])
-  
-  # Save config files
-  save_config(dataset_config, os.path.join(checkpoint_dir, 'dataset_config.json'))
-  save_config(model_config,   os.path.join(checkpoint_dir, 'model_config.json'))
-  save_config(train_config,   os.path.join(checkpoint_dir, 'train_config.json'))
+  if train_config['no_log']:
+    checkpoint_manager = DummyManager()
+  else:
+    checkpoint_manager = CheckpointManager(model, 
+                                          optimizer, 
+                                          checkpoint_dir,
+                                          interval = train_config['checkpoint_interval'],
+                                          max      = train_config['checkpoint_max'])
   
   
   #=== Setup Tensorboard Manager ===#
@@ -627,30 +636,31 @@ def main():
   else:
     tensorboard_dir = os.path.join(current_file_dir, 'runs', model_class, timestamp)
   
-  if not os.path.exists(tensorboard_dir):
-    os.makedirs(tensorboard_dir)
-  
-  tensorboard_manager = TensorboardManager(model,
-                                           test_loader,
-                                           tensorboard_dir,
-                                           n_train_batches  = len(train_loader),
-                                           test_interval    = train_config['test_interval'],
-                                           max_test_batches = train_config['max_test_batches'])
+  if train_config['no_log']:
+    tensorboard_manager = DummyManager()
+  else:
+    tensorboard_manager = TensorboardManager(model,
+                                             test_loader,
+                                             tensorboard_dir,
+                                             n_train_batches  = len(train_loader),
+                                             test_interval    = train_config['test_interval'],
+                                             max_test_batches = train_config['max_test_batches'])
   
   tensorboard_manager.link_checkpoint_manager(checkpoint_manager)
   
   
   #=== Write Config Files ===#
 
-  # Write to checkpoint
-  save_config(dataset_config, os.path.join(checkpoint_dir, 'dataset_config.json'))
-  save_config(model_config,   os.path.join(checkpoint_dir, 'model_config.json'))
-  save_config(train_config,   os.path.join(checkpoint_dir, 'train_config.json'))
+  if not train_config['no_log']:
+    # Save config files
+    save_config(dataset_config, os.path.join(checkpoint_dir, 'dataset_config.json'))
+    save_config(model_config,   os.path.join(checkpoint_dir, 'model_config.json'))
+    save_config(train_config,   os.path.join(checkpoint_dir, 'train_config.json'))
   
-  # Write to Tensorboard
-  tensorboard_manager.write_config({'dataset_config': dataset_config,
-                                    'model_config'  : model_config,
-                                    'train_config'  : train_config})
+    # Write to Tensorboard
+    tensorboard_manager.write_config({'dataset_config': dataset_config,
+                                      'model_config'  : model_config,
+                                      'train_config'  : train_config})
   
   
   #=== Start Training ===#

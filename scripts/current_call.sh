@@ -1,0 +1,1 @@
+python -m train.train_model --model-class student --from-teacher ./train/runs/kenkuteacher/16756183/checkpoints/epoch5_batch0_loss0.4276.pt --dataset-dir ./../Data/processed/VCTK/ --n-cores 2 --min-samples 7 --stack-factor 4 --conv-ch 80 --att-ch 80 -dor 0.2 --batch-size 32 --max-test-batches 100
