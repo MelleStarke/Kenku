@@ -51,12 +51,12 @@ def mse_loss(pred_mel: Tensor,
   return masked_mse_loss
 
 
-def mae_loss(prd_mel: Tensor, 
+def mae_loss(pred_mel: Tensor, 
              tgt_mel: Tensor,
              tgt_mask: Tensor):
 
   # Correct frame offsets, calc element-wise quadratic error, and mask error in padded frames.
-  masked_elem_loss = full_tgt_mask * (pred_mel_pe - tgt_mel_pe).abs()
+  masked_elem_loss = tgt_mask * (pred_mel - tgt_mel).abs()
   # Calculate mean over only the mel-dimension.
   masked_mel_dim_loss = torch.mean(masked_elem_loss, 1)
   # Calculate mean over only non-masked frames.

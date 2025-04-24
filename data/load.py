@@ -206,8 +206,8 @@ class ParallelDatasetFactory(SpeakerInfoMixin):
 
       # TODO: Fix this it's ugly. Or maybe not.
       if not os.path.exists(speaker_dir):
-          logger.warning(f'Speaker dir {speaker_dir} not found. Skipping speaker.')
-          continue
+        logger.warning(f'Speaker dir {speaker_dir} not found. Skipping speaker.')
+        continue
 
       for file_name in os.listdir(speaker_dir):
         transcript = None
