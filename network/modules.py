@@ -346,7 +346,6 @@ class AttentionPredictor(nn.Module):
     scalars     = 0.2 * torch.sigmoid(scalars) + 0.8
     
     #=== Order Means ===#
-    n_frames = mean_deltas.shape[-1]
     upper_triangular_mat = torch.triu(torch.ones(n_frames, n_frames, device=device))
     means = torch.matmul(mean_deltas, upper_triangular_mat)  # Shape batch_size X out_ch(1) X n_frames
 
@@ -406,7 +405,7 @@ if __name__ == "__main__":
       
       
     def da_loss(A, gauss_width_da=0.3):
-      batch_size, att_heads, n_frames, m_frames = A.shape
+      batch_size, n_frames, m_frames = A.shape
       assert n_frames == m_frames, "Non-square att mat"
       device = 'cuda'  
 
@@ -454,9 +453,13 @@ if __name__ == "__main__":
     for _ in range(1024):
       X = rand_tensor(batch_size, in_ch, n_frames)
       info = rand_info(batch_size)
-      A = att(X, info)
+      A, _, _ = att(X, info)
       
       loss, tgt = da_loss(A)
+      
+      for b in range(batch_size):
+        plt.imshow(tgt[b].detach().cpu().numpy())
+        plt.show()
       
       att.zero_grad()
       loss.backward()

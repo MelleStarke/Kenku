@@ -51,12 +51,12 @@ def mse_loss(pred_mel: Tensor,
   return masked_mse_loss
 
 
-def mae_loss(prd_mel: Tensor, 
+def mae_loss(pred_mel: Tensor, 
              tgt_mel: Tensor,
              tgt_mask: Tensor):
 
   # Correct frame offsets, calc element-wise quadratic error, and mask error in padded frames.
-  masked_elem_loss = full_tgt_mask * (pred_mel_pe - tgt_mel_pe).abs()
+  masked_elem_loss = tgt_mask * (pred_mel - tgt_mel).abs()
   # Calculate mean over only the mel-dimension.
   masked_mel_dim_loss = torch.mean(masked_elem_loss, 1)
   # Calculate mean over only non-masked frames.
@@ -181,25 +181,25 @@ if __name__ == "__main__":
   mode = [
     'attention_masking',
     'auxil_loss'
-  ][1]
+  ][0]
   
-  # dataset_factory = ParallelDatasetFactory(dataset_dir = '../Data/processed/VCTK')
+  dataset_factory = ParallelDatasetFactory(dataset_dir = '../Data/processed/VCTK')
   
-  # train_set, test_set = dataset_factory.train_test_split(min_transcript_samples = 8,
-  #                                                        train_set_threshold    = 10,
-  #                                                        sample_pairing         = 'random',
-  #                                                        downsample             = True)
+  train_set, test_set = dataset_factory.train_test_split(min_transcript_samples = 8,
+                                                         train_set_threshold    = 10,
+                                                         sample_pairing         = 'random',
+                                                         downsample             = True)
 
-  # data_loader_kwargs = {
-  #   'batch_size'  : 6,
-  #   'shuffle'     : True,
-  #   'num_workers' : 12,
-  #   'collate_fn'  : collate_fn,
-  #   'drop_last'   : True,
-  #   'pin_memory'  : True
-  # }
-  # train_loader = DataLoader(train_set, **data_loader_kwargs)
-  # test_loader  = DataLoader(test_set,  **data_loader_kwargs)
+  data_loader_kwargs = {
+    'batch_size'  : 6,
+    'shuffle'     : True,
+    'num_workers' : 12,
+    'collate_fn'  : collate_fn,
+    'drop_last'   : True,
+    'pin_memory'  : True
+  }
+  train_loader = DataLoader(train_set, **data_loader_kwargs)
+  test_loader  = DataLoader(test_set,  **data_loader_kwargs)
   
   
   if mode == 'attention_masking':
@@ -210,13 +210,13 @@ if __name__ == "__main__":
 
     print(mse_loss(src_mel, tgt_mel[:,:,1:], tgt_mask))
 
-    rbf_mat = masked_rbf_kernel_matrix(20, 60, 15, 40, 0.3)
+    rbf_mat = masked_gauss_dist_matrix(20, 60, 15, 40, 0.3)
     print(rbf_mat.min(), rbf_mat.max())
     print(rbf_mat.shape)
 
 
-    plt.imshow(rbf_mat.detach().cpu().numpy())
-    plt.show()
+    # plt.imshow(rbf_mat.detach().cpu().numpy())
+    # plt.show()
 
     N = src_mel.shape[2]
     T = tgt_mel.shape[2]
@@ -232,7 +232,9 @@ if __name__ == "__main__":
       nN_tiled = np.tile(nN[:,np.newaxis], (1,T))
       tT_tiled = np.tile(tT[np.newaxis,:], (N,1))
       W[b,:,:] = 1.0-np.exp(-np.square(nN_tiled - tT_tiled)/(2.0*0.3**2))
-      W[b,Nb:N,Tb:T] = 0.
+      # W[b,Nb:N,Tb:T] = 0.
+      W[b,Nb:,:] = 0.
+      W[b,:,Tb:] = 0.
 
       plt.imshow(W[b], aspect='auto')
       plt.show()
