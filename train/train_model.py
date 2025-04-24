@@ -31,12 +31,7 @@ from network import KenkuModel, KenkuTeacher, KenkuStudent, stack_frames, unstac
 
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-# torch.multiprocessing.set_start_method('spawn')
-# torch.set_default_device("cuda:0")
 
-# print(f"\n\n{torch.cuda.is_available()}\n\n")
-
-# exit(0)
 
 ###############
 ### Logging ###
@@ -102,20 +97,25 @@ class CheckpointManager:
       
       # Update heap according to test loss  
       if update_heap:
-        self.save_checkpoint(filename)
-        heappush(self.filenames_heap, (-self.latest_test_loss, filename))
+        save_successful = self.save_checkpoint(filename)
         
-        # Remove checkpoint with the highest test loss if the maximum amount is exceeded
-        if len(self.filenames_heap) > self.max_checkpoints:
-          self.delete_worst_checkpoint()
+        if save_successful:
+          heappush(self.filenames_heap, (-self.latest_test_loss, filename))
+          
+          # Remove checkpoint with the highest test loss if the maximum amount is exceeded
+          if len(self.filenames_heap) > self.max_checkpoints:
+            self.delete_worst_checkpoint()
           
       # Update latest checkpoint if it isn't already in the heap
       else:
-        if os.path.exists(self.latest_checkpoint_filepath):
-          os.remove(self.latest_checkpoint_filepath)
-        
-        self.latest_checkpoint_filepath = os.path.join(self.save_path, filename)
-        self.save_checkpoint(filename)
+        save_successful = self.save_checkpoint(filename)
+
+        if save_successful:
+          if os.path.exists(self.latest_checkpoint_filepath):
+            os.remove(self.latest_checkpoint_filepath)
+          
+          self.latest_checkpoint_filepath = os.path.join(self.save_path, filename)
+          
         
       # Ensure checkpoints get removed to prevent excessive data storage.
       n_checkpoints = len([os.path.isfile(f) for f in os.listdir(self.save_path)])
@@ -135,7 +135,14 @@ class CheckpointManager:
       'test_melspecs': self.test_melspecs
     }
     checkpoint_path = os.path.join(self.save_path, filename)
-    torch.save(checkpoint, checkpoint_path)
+    
+    try:
+      torch.save(checkpoint, checkpoint_path)
+    except RuntimeError as e:
+      logger.error(f'A Runtime error occurred while trying to save a checkpoint:\n\n{str(e)}')
+      return False
+    
+    return True
     
   def delete_worst_checkpoint(self):
     _, filename = heappop(self.filenames_heap)
@@ -375,6 +382,7 @@ def train_model(model: KenkuModel,
 
       # Record training loss
       if batch_index % train_loss_interval == 0:
+        print(f"Train loss: {np.mean(running_loss)}")
         tensorboard_manager.record_train_loss(np.mean(running_loss))
         running_loss = []
 
@@ -501,7 +509,7 @@ def main():
   
   # Model Config
   model_config_keys = ['model_class', 'from_teacher', 'in_ch', 'conv_ch', 'att_ch', 'out_ch', 
-                       'embed_ch', 'num_accents', 'stack_factor']
+                       'embed_ch', 'num_accents', 'stack_factor', 'dropout_rate']
   model_config = create_config_dict(args_dict, model_config_keys, args.model_config_path)
   
   # Training Config
