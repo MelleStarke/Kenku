@@ -178,6 +178,7 @@ cython_debug/
 # Temp/Test files
 data/test_scaler.py
 */temp.*
+*/sandbox*
 
 # VSCode/Codium stuff
 *.code-workspace
