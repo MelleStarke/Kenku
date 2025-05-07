@@ -354,7 +354,7 @@ def train_model(model: KenkuModel,
   model.train()
 
   for epoch in range(epochs):
-    print(f"===== Epoch {epoch} =====")
+    print(f"#=== Epoch {epoch} ===#")
     # TODO: Maybe do this at the end of the epoch.
     DAL_weight = DAL_weight_init * np.exp(-epoch * DAL_weight_decay)
     
@@ -382,7 +382,7 @@ def train_model(model: KenkuModel,
 
       # Record training loss
       if batch_index % train_loss_interval == 0:
-        print(f"Train loss: {np.mean(running_loss)}")
+        # print(f"Train loss: {np.mean(running_loss)}")
         tensorboard_manager.record_train_loss(np.mean(running_loss))
         running_loss = []
 
@@ -615,21 +615,24 @@ def main():
   
   
   #=== Setup Checkpoint Manager ===#
+  print(f"\n===== Logging =====")
 
-  timestamp = timestamp = datetime.now().strftime("%y-%m-%d_%H:%M:%S")
   run_dir = train_config['run_dir']
   
-  if run_dir:
-    checkpoint_dir = os.path.join(run_dir, 'checkpoints')
-  else:
-    checkpoint_dir = os.path.join(current_file_dir, 'runs', model_class, timestamp, 'checkpoints')
+  if run_dir is None or run_dir == "":
+    timestamp = datetime.now().strftime("%y-%m-%d_%H:%M:%S")
+    run_dir = os.path.join(current_file_dir, 'runs', model_class, timestamp)
+  
+  checkpoint_dir = os.path.join(run_dir, 'checkpoints')
   
   if not os.path.exists(checkpoint_dir) and not train_config['no_log']:
     os.makedirs(checkpoint_dir)
   
   if train_config['no_log']:
+    print('Logging disabled')
     checkpoint_manager = DummyManager()
   else:
+    print(f'Logging performance and saving checkpoints in {run_dir}')
     checkpoint_manager = CheckpointManager(model, 
                                           optimizer, 
                                           checkpoint_dir,
@@ -639,10 +642,7 @@ def main():
   
   #=== Setup Tensorboard Manager ===#
   
-  if run_dir:
-    tensorboard_dir = run_dir
-  else:
-    tensorboard_dir = os.path.join(current_file_dir, 'runs', model_class, timestamp)
+  tensorboard_dir = run_dir
   
   if train_config['no_log']:
     tensorboard_manager = DummyManager()

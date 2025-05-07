@@ -11,8 +11,6 @@ from scipy.spatial.distance import cdist
 
 from abc import ABC, abstractmethod
 
-from data.load import ParallelDatasetFactory, ParallelMelspecDataset, collate_fn
-
 
 ###############
 ### Logging ###
@@ -147,6 +145,21 @@ def compose_random_sines(max_period: int,
 
   return inner
   
+def get_default_augment_fn():
+  clip       = AlignedRandomClip()
+  power_warp = RandomPowerWarp()
+  time_warp  = RandomStretchedTimeWarp()
+  
+  def fn_composition(src_mel: Tensor, tgt_mel: Tensor):
+    src_mel, tgt_mel = clip(src_mel, tgt_mel)
+    src_mel, tgt_mel = power_warp(src_mel, tgt_mel)
+    src_mel = time_warp(src_mel)
+    tgt_mel = time_warp(tgt_mel)
+    
+    return src_mel, tgt_mel
+  
+  return fn_composition
+
 
 class MelspecTransform(ABC):
     
@@ -203,7 +216,7 @@ class AlignedRandomClip(MelspecTransform):
     clipped_src = src_mel[..., src_start:src_end]
     clipped_tgt = tgt_mel[..., tgt_start:tgt_end]
     
-    return clipped_src, clipped_tgt, src_start, tgt_start
+    return clipped_src, clipped_tgt
 
 
 class RandomStretchedTimeWarp(MelspecTransform):
@@ -300,13 +313,13 @@ class RandomPowerWarp:
   def __init__(self, 
                min_sines:     int = 2,
                max_sines:     int = 5,
-               min_freq:    float = 1.,
-               max_freq:    float = 5.,
+               min_freq:    float = 0.5,
+               max_freq:    float = 4.,
                min_amp:     float = 0.5,
                max_amp:     float = 2.,
                min_mag:     float = 0.1,
-               max_mag:     float = 0.9,
-               power_range_scale: float = 0.2
+               max_mag:     float = 0.5,
+               power_range_scale: float = 0.15
   ):
     """
     Initialize the power warping transformation.
@@ -337,7 +350,7 @@ class RandomPowerWarp:
     # Store the current warping function for visualization
     self.current_warping = None
       
-  def generate_power_warping_function(self):
+  def make_power_warp_fn(self):
     """
     Generate a non-monotonic warping function for power values.
     
@@ -380,7 +393,7 @@ class RandomPowerWarp:
         
     return map_fn
   
-  def __call__(self, melspec, visualize=False):
+  def __call__(self, src_melspec: Tensor, tgt_melspec: Tensor, visualize=False):
     """
     Apply power warping to a mel-spectrogram.
     
@@ -393,31 +406,35 @@ class RandomPowerWarp:
         and optionally the warping function
     """
     # Generate the warping function
-    warping_function = self.generate_power_warping_function()
+    warp_fn = self.make_power_warp_fn()
     
     # Determine the range of the melspec
-    min_val = melspec.min()
-    max_val = melspec.max()
-    value_range = max_val - min_val
+    min_val = min(src_melspec.min(), tgt_melspec.min())
+    max_val = max(src_melspec.max(), tgt_melspec.max())
+    val_diff = max_val - min_val
     
-    if value_range == 0:  # Handle constant spectrograms
-      return melspec
+    if val_diff == 0:  # Handle constant spectrograms
+      return src_melspec, tgt_melspec
     
     # Apply random in-/decrease of min_val and max_val proportional to self.power_range_scale
-    diff = max_val - min_val
     scale = self.power_range_scale
-    min_val += rng.uniform(-diff * scale, diff * scale)
-    max_val += rng.uniform(-diff * scale, diff * scale)
+    min_val += rng.uniform(-val_diff * scale, val_diff * scale)
+    max_val += rng.uniform(-val_diff * scale, val_diff * scale)
   
-    # Normalize, apply warping, and rescale
-    normalized = (melspec - min_val) / value_range
-    warped_normalized = warping_function(normalized)
-    warped = warped_normalized * value_range + min_val
+    # Normalize
+    src_norm_spec = (src_melspec - min_val) / val_diff
+    tgt_norm_spec = (tgt_melspec - min_val) / val_diff
+    # Apply warping
+    src_warp_spec = warp_fn(src_norm_spec)
+    tgt_warp_spec = warp_fn(tgt_norm_spec)
+    # Rescale
+    src_warp_spec = src_warp_spec * val_diff + min_val
+    tgt_warp_spec = tgt_warp_spec * val_diff + min_val
     
     if visualize:
-      return warped, self.current_warping
+      return src_warp_spec, tgt_warp_spec, self.current_warping
     
-    return warped
+    return src_warp_spec, tgt_warp_spec
   
   def plot_warping_function(self):
     """
@@ -425,7 +442,7 @@ class RandomPowerWarp:
     """
     if self.current_warping is None:
         # Generate a warping function first
-        _ = self.generate_power_warping_function()
+        _ = self.make_power_warp_fn()
         
     x, warped = self.current_warping
     
@@ -442,6 +459,7 @@ class RandomPowerWarp:
   
 if __name__ == '__main__':
   import matplotlib.pyplot as plt
+  from data.load import ParallelDatasetFactory, ParallelMelspecDataset, collate_fn
   
   mode = [
     'clip',
@@ -560,14 +578,10 @@ if __name__ == '__main__':
       plt.show()
       
   if mode == 'power':
-    strong_warper = RandomPowerWarp(
-        min_sines=3, 
-        max_sines=5,
-        min_mag=0.3,
-        max_mag=0.6
-    )
+    rpw = RandomPowerWarp(min_mag=0.1)
     
     for i in range(10):
+      # src stuff
       mask    = src_masks[i].squeeze()
       mask_idxs = torch.arange(1, len(mask) + 1)
       mask_idxs = (mask_idxs * mask)
@@ -575,23 +589,40 @@ if __name__ == '__main__':
       src_mel = src_mels[i,...,:max_mask_idx]
       n_frames = src_mel.shape[-1]
       
+      # tgt stuff
+      mask    = tgt_masks[i].squeeze()
+      mask_idxs = torch.arange(1, len(mask) + 1)
+      mask_idxs = (mask_idxs * mask)
+      max_mask_idx = int(mask_idxs.max())
+      tgt_mel = tgt_mels[i,...,:max_mask_idx]
+      n_tgt_frames = tgt_mel.shape[-1]
+      
       # Apply warping with visualization
-      warped, (x, y) = strong_warper(src_mel, visualize=True)
+      src_warp, tgt_warp, (x, y) = rpw(src_mel, tgt_mel, visualize=True)
       
-      fig, axes = plt.subplots(3, 1)
-      axes[0].imshow(src_mel, aspect='auto')
-      axes[0].set_title("Source")
+      vmin = min(src_mel.min(), tgt_mel.min(), src_warp.min(), tgt_warp.min())
+      vmax = max(src_mel.max(), tgt_mel.max(), src_warp.max(), tgt_warp.max())
       
-      axes[1].imshow(warped, aspect='auto')
-      axes[1].set_title("Warped")
+      fig, axes = plt.subplots(3, 2)
       
-      axes[2].plot(x, y, 'b-', linewidth=2, label='Warping function')
-      axes[2].plot(x, x, 'k--', alpha=0.5, label='Identity')
-      axes[2].grid(True, alpha=0.3)
-      axes[2].set_title(f"Power Warping Function")
-      axes[2].legend()
+      axes[0,0].imshow(src_mel, vmin=vmin, vmax=vmax, aspect='auto')
+      axes[0,0].set_title("Source")
+      axes[0,1].imshow(tgt_mel, vmin=vmin, vmax=vmax, aspect='auto')
+      axes[0,1].set_title("Target")
+      
+      axes[1,0].imshow(src_warp, vmin=vmin, vmax=vmax, aspect='auto')
+      axes[1,0].set_title("Warped source")
+      axes[1,1].imshow(tgt_warp, vmin=vmin, vmax=vmax, aspect='auto')
+      axes[1,1].set_title("Warped target")
+      
+      axes[2,0].plot(x, y, 'b-', linewidth=2, label='Warping function')
+      axes[2,0].plot(x, x, 'k--', alpha=0.5, label='Identity')
+      axes[2,0].grid(True, alpha=0.3)
+      axes[2,0].set_title(f"Power Warping Function")
+      axes[2,0].legend()
     
-      print(f" src min/max: {src_mel.min():.4}, {src_mel.max():.4}\n" f"warp min/max: {warped.min():.4}, {warped.max():.4}")
+      print(f" src min/max: {src_mel.min():.4}, {src_mel.max():.4}\t" f"warp min/max: {src_warp.min():.4}, {src_warp.max():.4}")
+      print(f" tgt min/max: {tgt_mel.min():.4}, {tgt_mel.max():.4}\t" f"warp min/max: {tgt_warp.min():.4}, {tgt_warp.max():.4}\n")
       
-      plt.tight_layout()
+      # plt.tight_layout()
       plt.show()

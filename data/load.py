@@ -15,9 +15,10 @@ from typing import List, Tuple, Optional, Union, Dict
 
 from torch.utils.data import Dataset, DataLoader
 
-from network import stack_frames
-
 from itertools import product
+
+from data.augment import get_default_augment_fn
+from network import stack_frames
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -85,6 +86,13 @@ def collate_fn(batch):
                               3.) source masks,              4.) target masks,
                               5.) source speaker info, 6.) target speaker info.
   """
+  #=== Augmentation ===#
+  augment_fn = get_default_augment_fn()
+  
+  batch = [(*augment_fn(src_mel, tgt_mel), src_info, tgt_info)
+           for src_mel, tgt_mel, src_info, tgt_info in batch]
+  
+  #=== Batching ===#
   batch_size = len(batch)
   n_mels = len(batch[0][0])  # nr. of frequency features in mel-spectrogram
   
