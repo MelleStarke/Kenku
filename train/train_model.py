@@ -392,6 +392,7 @@ def train_model(model: KenkuModel,
 ############
 
 def main():
+  print(f'Time: {datetime.now().strftime("%H:%M:%S")}')
 
   parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter)
   
@@ -499,6 +500,7 @@ def main():
   #=== Configs ===#
   
   print(f"\n===== Configs =====")
+  print(f'Time: {datetime.now().strftime("%H:%M:%S")}')
   
   # Merge Command Line and Config File Arguments
   
@@ -526,6 +528,7 @@ def main():
   #=== Load/Create Datasets ===#
   
   print(f"\n===== Data =====")
+  print(f'Time: {datetime.now().strftime("%H:%M:%S")}')
   
   dataset_factory = ParallelDatasetFactory(dataset_dir = dataset_config['dataset_dir'])
   
@@ -576,6 +579,7 @@ def main():
   
   if model_config['from_teacher']:
     print(f"\n===== Student from Teacher =====")
+    print(f'Time: {datetime.now().strftime("%H:%M:%S")}')
     teacher_checkpoint_path = model_config['from_teacher']
     teacher_checkpoint = torch.load(teacher_checkpoint_path, map_location=device, weights_only=True)
   
@@ -598,6 +602,7 @@ def main():
   
   if train_config['from_checkpoint']:
     print(f"\n===== Checkpoint =====")
+    print(f'Time: {datetime.now().strftime("%H:%M:%S")}')
     
     checkpoint_load_path = train_config['from_checkpoint']
     checkpoint = torch.load(checkpoint_load_path, map_location=device, weights_only=True)
@@ -616,6 +621,7 @@ def main():
   
   #=== Setup Checkpoint Manager ===#
   print(f"\n===== Logging =====")
+  print(f'Time: {datetime.now().strftime("%H:%M:%S")}')
 
   run_dir = train_config['run_dir']
   
@@ -674,6 +680,7 @@ def main():
   #=== Start Training ===#
   
   print(f"\n===== Starting Training =====")
+  print(f'Time: {datetime.now().strftime("%H:%M:%S")}')
 
   train_model(model,
               optimizer,

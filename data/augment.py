@@ -169,21 +169,11 @@ class MelspecTransform(ABC):
   
 
 class AlignedRandomClip(MelspecTransform):
-  def __init__(self, max_clip: int = 0.2):
-    if isinstance(max_clip, float):
-      assert 0.0 < max_clip < 0.5, "max_clip is used on both sides of the spectrogram. " \
-      f"Therefore it should be in the range (0.0, 0.5). Got: max_clip = {max_clip}"
-      
-    else:
-      assert min_length > max_clip * 2, "max_clip is used on both sides of the spectrogram. " \
-        f"Therefore min_length should be larger than max_clip * 2. Got: min_length = {min_lenght} | max_clip = {max_clip}"
-      
-    self.max_clip   = max_clip
+  def __init__(self, max_clip_ratio: float = 0.2):
+    assert 0.0 < max_clip_ratio < 0.5, "max_clip_ratio is used on both sides of the spectrogram. " \
+    f"Therefore it should be in the range (0.0, 0.5). Got: max_clip_ratio = {max_clip_ratio}"
     
-    if isinstance(max_clip, int):  
-      self.min_length = max_clip * 2 + 1
-    else:
-      self.min_length = 0
+    self.max_clip_ratio   = max_clip_ratio
     
   def __call__(self, src_mel: Tensor, tgt_mel: Tensor):
     # Compute DTW path
@@ -195,28 +185,47 @@ class AlignedRandomClip(MelspecTransform):
     src_indices = path[:,0]
     tgt_indices = path[:,1]
     
-    # Determine path length and if it can be clipped
+    # Determine path length and absolute max clip value
     path_length = len(path)
-    if path_length < self.min_length:
+    max_clip = int(self.max_clip_ratio * path_length)
+    
+    # Try to find a correct clipping
+    max_attempts = 100
+    for attempt in range(max_attempts):
+      # Choose random start point
+      start_idx = rng.integers(max_clip + 1)
+      end_idx = path_length - rng.integers(max_clip + 1) - 1
+      
+      # Get corresponding indices in original spectrograms
+      src_start, src_end = src_indices[start_idx], src_indices[end_idx]
+      tgt_start, tgt_end = tgt_indices[start_idx], tgt_indices[end_idx]
+      
+      # Check if the start indices are smaller than end indices
+      if src_end - src_start <= 0 or tgt_end - tgt_start <= 0:
+        continue  # Try again
+      
+      # Clip the spectrograms
+      clipped_src = src_mel[..., src_start:src_end]
+      clipped_tgt = tgt_mel[..., tgt_start:tgt_end]
+      
+      # Check if the frame dimension wasn't removed
+      if len(clipped_src.shape) < 2 or len(clipped_tgt.shape) < 2:
+        continue  # Try again
+      
+      clipped_src_ratio = clipped_src.shape[-1] / src_mel.shape[-1]
+      clipped_tgt_ratio = clipped_tgt.shape[-1] / tgt_mel.shape[-1]
+      
+      if    clipped_src_ratio < 1 - self.max_clip_ratio * 2 \
+         or clipped_src_ratio < 1 - self.max_clip_ratio * 2:
+           continue  # Try again
+      
+       
+      return clipped_src, clipped_tgt
+    
+    # Failsafe. Return unmodified spectrograms if no valid clipping was found.
+    else:
+      logger.warning(f"Not able to find a correct clipping after {max_attempts} attempts.")
       return src_mel, tgt_mel
-    
-    max_clip = self.max_clip
-    if isinstance(max_clip, float):
-      max_clip = int(max_clip * path_length)
-    
-    # Choose random start point
-    start_idx = rng.integers(max_clip + 1)
-    end_idx = path_length - rng.integers(max_clip + 1) - 1
-    
-    # Get corresponding indices in original spectrograms
-    src_start, src_end = src_indices[start_idx], src_indices[end_idx]
-    tgt_start, tgt_end = tgt_indices[start_idx], tgt_indices[end_idx]
-    
-    # Clip the spectrograms
-    clipped_src = src_mel[..., src_start:src_end]
-    clipped_tgt = tgt_mel[..., tgt_start:tgt_end]
-    
-    return clipped_src, clipped_tgt
 
 
 class RandomStretchedTimeWarp(MelspecTransform):
