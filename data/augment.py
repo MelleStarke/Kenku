@@ -271,10 +271,10 @@ class RandomStretchedTimeWarp(MelspecTransform):
   
   def apply_time_warp(self, melspec, warp_matrix=None, ax=None):
     n_src_frames = melspec.shape[-1]
-    n_tgt_frames = int(rng.uniform(self.min_stretch, self.max_stretch) * n_src_frames)
+    n_warp_frames = int(rng.uniform(self.min_stretch, self.max_stretch) * n_src_frames)
     
     if warp_matrix is None:
-      composite_fn = compose_random_sines(max_period=n_tgt_frames,
+      composite_fn = compose_random_sines(max_period=n_warp_frames,
                                           min_sines=self.min_sines,
                                           max_sines=self.max_sines,
                                           min_freq=self.min_freq,
@@ -283,17 +283,17 @@ class RandomStretchedTimeWarp(MelspecTransform):
                                           max_amp=self.max_amp,
                                           min_mag=self.min_mag,
                                           max_mag=self.max_mag)
-      composite = composite_fn(np.arange(n_tgt_frames))
+      composite = composite_fn(np.arange(n_warp_frames))
         
       # Upper triangular ones matrix for accumulating sine composite
-      triu = np.triu(np.ones((n_tgt_frames, n_tgt_frames)))
+      triu = np.triu(np.ones((n_warp_frames, n_warp_frames)))
       # Accumulate sines and scale to n_src_frames
       warped_idxs = composite @ triu
       # Scale such that the highest (i.e. last) value is equal to n_src_frames - 1
       warped_idxs *= (n_src_frames - 1) / warped_idxs[-1]
       
       if ax is not None:
-        ax.plot(np.arange(n_tgt_frames), warped_idxs)
+        ax.plot(np.arange(n_warp_frames), warped_idxs)
       
       warp_matrix = self.create_warp_matrix(warped_idxs, n_src_frames=n_src_frames)
       
