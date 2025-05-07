@@ -328,13 +328,15 @@ class AttentionPredictor(nn.Module):
                                )
       
       
-  def forward(self, src_mels: Tensor, tgt_info: Tuple[List[int], List[str], List[str]]):
-    batch_size, _, n_frames = src_mels.shape
+  def forward(self, src_mels: Tensor, tgt_info: Tuple[List[int], List[str], List[str]], n_tgt_frames: int = None):
     device = src_mels.device
     dtype  = src_mels.dtype
     
+    batch_size, _, n_src_frames = src_mels.shape
+    n_tgt_frames = n_src_frames if n_tgt_frames is None else n_tgt_frames
+    
     # Add Gaussian noise channel (mean=0, std=1) to facilitate many-to-one mapping
-    gauss_noise_ch = torch.normal(0, 1, (batch_size, 1, n_frames), generator=self.rng, device=device, dtype=dtype)
+    gauss_noise_ch = torch.normal(0, 1, (batch_size, 1, n_src_frames), generator=self.rng, device=device, dtype=dtype)
     src_mels = torch.cat((gauss_noise_ch, src_mels), dim=1)
     
     # Get Gaussian parameters from the encoder
@@ -346,10 +348,10 @@ class AttentionPredictor(nn.Module):
     scalars     = 0.2 * torch.sigmoid(scalars) + 0.8
     
     #=== Order Means ===#
-    upper_triangular_mat = torch.triu(torch.ones(n_frames, n_frames, device=device))
+    upper_triangular_mat = torch.triu(torch.ones(n_src_frames, n_src_frames, device=device))
     means = torch.matmul(mean_deltas, upper_triangular_mat)  # Shape batch_size X out_ch(1) X n_frames
 
-    tgt_frame_idxs   = torch.arange(n_frames).view(1, 1, n_frames).to(device)
+    tgt_frame_idxs   = torch.arange(n_tgt_frames).view(1, 1, n_tgt_frames).to(device)
     unnorm_gauss_att = scalars[...,None] * torch.exp(-(tgt_frame_idxs - means[...,None])**2 / (2 * stds[...,None]**2))
     
     norm_gauss_att = unnorm_gauss_att / (unnorm_gauss_att.sum(dim=-1, keepdim=True) + 1e-8)

@@ -312,7 +312,12 @@ class KenkuTeacher(KenkuModel):
     # TODO: Authors feed source mel into forward without appending zero frame,
     #       despite prepending target zero frame. This supposedly doesn't throw an error?
     #       For now I'll just append zero frame to source so the shapes match up.
+    #       Edit: Made it work without appending zero frame to source
     
+    #=== Position Encoding ===#
+    src_mel, tgt_mel = apply_position_encoding(src_mel, tgt_mel, pos_weight=pos_weight)
+    
+    #=== Frame Stacking ===#
     sf = self.stack_factor
     
     # Stack frames along the mel-dimension, thereby reducing the frame-dimension.
@@ -322,16 +327,15 @@ class KenkuTeacher(KenkuModel):
       
       src_mask = src_mask[:,:,::sf]
       tgt_mask = tgt_mask[:,:,::sf]
-      
+    
+    # Prepend zero frame to target as a start-of-sequence token
     tgt_mel = prepend_zero_frame(tgt_mel)
+    tgt_mask = prepend_zero_frame(tgt_mask)
     # src_mel = append_zero_frame(src_mel)
     
     batch_size, n_mels, n_frames = src_mel.shape
     
-    # Position encoding
-    src_mel, tgt_mel = apply_position_encoding(src_mel, tgt_mel, pos_weight=pos_weight)
-    
-    # Forward pass
+    #=== Forward Pass ===#
     pred_mel, A = self(src_mel, tgt_mel, src_info, tgt_info, stack=False)
     
     # Main loss term
@@ -342,7 +346,8 @@ class KenkuTeacher(KenkuModel):
     
     # TODO: Intuition based fix, since tgt has a zero frame appended
     #       and pred's frame dim is the same as tgt's
-    main_loss = main_loss_fn(pred_mel[...,1:], tgt_mel[...,:-1], tgt_mask)
+    #       Edit: removed slicing. Used to be `pred_mel[...,1:], tgt_mel[...,:-1],`
+    main_loss = main_loss_fn(pred_mel, tgt_mel, tgt_mask)
     
     # Diagonal attention loss
     da_loss = diag_att_loss(A, src_mask, tgt_mask, tgt_sigma = dal_tgt_sigma)
@@ -442,9 +447,11 @@ class KenkuStudent(KenkuModel):
     if loss_weights is not None:
       assert len(loss_weights) == 3, f"Incorrect amount of loss weights. Expected 3, got {len(loss_weights)}."
     
-    sf = self.stack_factor
+    #=== Position Encoding ===#
+    src_mel, tgt_mel = apply_position_encoding(src_mel, tgt_mel, pos_weight=pos_weight)
     
-    #=== Preprocessing ===#
+    #=== Frame Stacking ===#
+    sf = self.stack_factor
     
     # Stack frames along the mel-dimension, thereby reducing the frame-dimension.
     if sf > 1:
@@ -459,15 +466,12 @@ class KenkuStudent(KenkuModel):
     #       For example: passing one of the two as a kwarg and making the gauss function
     #       add or remove 1 frame.
     # Prepend zero frame as start-of-sequence token
-    # tgt_mel = prepend_zero_frame(tgt_mel)
+    tgt_mel = prepend_zero_frame(tgt_mel)
+    tgt_mask = prepend_zero_frame(tgt_mask)
     
-    batch_size, n_mels, n_frames = src_mel.shape
-    
-    # Position encoding
-    src_mel, tgt_mel = apply_position_encoding(src_mel, tgt_mel, pos_weight=pos_weight)
+    n_tgt_frames = tgt_mel.shape[-1]
     
     #=== Forward Pass ===#
-    
     K, V, Q = self.encode_inputs(src_mel, tgt_mel, src_info, tgt_info, stack = False)
     
     # Real attention matrix from the Teacher's encoders
@@ -475,7 +479,7 @@ class KenkuStudent(KenkuModel):
     
     # TODO: prepend zero frame as start of sequence token?
     # Time-scaled sequence according to the attention predictor
-    pred_A, pred_means, pred_vars = self.attention_predictor(src_mel, tgt_info)
+    pred_A, pred_means, pred_vars = self.attention_predictor(src_mel, tgt_info, n_tgt_frames=n_tgt_frames)
     
     R = V.matmul(pred_A)
     pred_mel = self.decoder(R, tgt_info)
@@ -541,7 +545,7 @@ if __name__ == "__main__":
   ch = 80
   sf = 1
   model = KenkuTeacher(ch, ch, ch, ch, 12, 11)
-  model = KenkuTeacher.to_student()
+  model = model.to_student()
   
   src_mel, tgt_mel, src_mask, tgt_mask, src_info, tgt_info = next(iter(loader))
   loss = model.calc_loss(src_mel, tgt_mel, src_info, tgt_info)
