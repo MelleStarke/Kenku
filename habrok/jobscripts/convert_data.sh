@@ -11,23 +11,22 @@
 #SBATCH --output="/home3/s4984218/Kenku/habrok/jobscripts/results/convert_data_%j.out"
 
 module purge
-module load PyTorch-bundle/2.1.2-foss-2023a
-module load scikit-learn/1.3.1-gfbf-2023a
 
-echo "Finished loading modules"
+source ~/scripts/activate_venv.sh
 
-source ~/venvs/py3.11.5/bin/activate
+echo "Script Contents"
 
-echo "Activated venv"
+cat ~/Kenku/habrok/jobscripts/train_teacher.sh
 
-echo "Running scripts"
+echo "Running script"
+date +"%H:%M:%S"
 
 cd ~/Kenku
 srun python -m data.convert_audio ~/scratch/raw/wav48 ~/scratch/processed/melspec --calc-norm --apply-norm --trim-silence --top-db 20
 
 echo "Finished audio conversion"
 
-srun python -m data.clean_transcripts ~/scratch/raw/txt ~/scratch/processed/transcript
+# srun python -m data.clean_transcripts ~/scratch/raw/txt ~/scratch/processed/transcript
 
 echo "Finished transcript cleaning"
 

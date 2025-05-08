@@ -115,7 +115,7 @@ def audio_file_to_melspec(src_filepath: str, dst_filepath: str, config: dict, ov
     # Optionally trim silence
     if trim_silence:
       # TODO: why manual frame length and shift if we can use config above?
-      audio, _ = librosa.effects.trim(audio, top_db=top_db, frame_length=2048, hop_length=512)
+      audio, _ = librosa.effects.trim(audio, top_db=top_db, frame_length=512, hop_length=128, aggregate=np.mean)
 
     # Resample if the base sampling rate doesn't match the target rate
     if base_samp_rate != samp_rate:
@@ -275,7 +275,8 @@ def main():
   parser.add_argument('--ext', type=str, default='.wav',
                       help='File extension for input audio files (e.g. .wav).')
   parser.add_argument('--conf', type=str, default=None,
-                      help='Path to a JSON file where the data configuration will be saved. '                            'Defaults to `<dest>/data_config.json`\n')
+                      help='Path to a JSON file where the data configuration will be saved. '
+                           'Defaults to `<dest>/data_config.json`\n')
   
   parser.add_argument('--calc-norm', action="store_true", 
                       help="Calculate mean and std as a sklearn.StandardScaler object and store as a .pkl file 1 level above --dst")
