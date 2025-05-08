@@ -3,8 +3,10 @@ import torch
 import os
 import h5py
 import logging
+import joblib
 import matplotlib.pyplot as plt
 
+from tqdm import tqdm
 from copy import copy
 from csv import DictReader
 from dataclasses import dataclass, field
@@ -185,6 +187,9 @@ class ParallelDatasetFactory(SpeakerInfoMixin):
     self.age_bounds = age_bounds
     self.rng = rng if rng else np.random.default_rng(42)
     
+    self.samples = []
+    self.transcript_dict = {}
+    
     melspec_dir       = os.path.join(dataset_dir, 'melspec')
     transcript_dir    = os.path.join(dataset_dir, 'transcript')
     speaker_info_path = os.path.join(dataset_dir, 'speaker_info.csv')
@@ -196,64 +201,69 @@ class ParallelDatasetFactory(SpeakerInfoMixin):
     
     #=== Create Dataset Samples ===#
     
-    self.samples = []
-    self.transcript_dict = {}
-    
     # Folder names of speakers used as speaker IDs
     speaker_ids = sorted([folder_name for folder_name in os.listdir(melspec_dir)
-                          if os.path.isdir(os.path.join(melspec_dir, folder_name))])
+                          if   os.path.isdir(os.path.join(melspec_dir, folder_name))
+                           and folder_name in speaker_info.keys()])
+    
+    # List of args passed to joblib.Parallel
+    args = []
     
     for speaker_id in speaker_ids:
+      files = os.listdir(os.path.join(melspec_dir, speaker_id))
+      file_paths = [file_path for file_name in files if os.path.isfile(file_path:=os.path.join(melspec_dir, speaker_id, file_name))]
+      args += [(file_path, speaker_id) for file_path in file_paths]
+    
+    def load_sample(file_path, speaker_id):
       try:
         info = speaker_info[speaker_id]
       except KeyError:
         logger.warning(f"Speaker {speaker_id} not found in speaker info object. Skipping samples of this speaker.")
-        continue
+        return None
 
-      speaker_dir = os.path.join(transcript_dir, speaker_id)
-
-      # TODO: Fix this it's ugly. Or maybe not.
-      if not os.path.exists(speaker_dir):
-        logger.warning(f'Speaker dir {speaker_dir} not found. Skipping speaker.')
-        continue
-
-      for file_name in os.listdir(speaker_dir):
-        transcript = None
+      transcript = None
+      
+      transcript_path = file_path.replace(melspec_dir, transcript_dir).replace('.h5', '.txt')
+      with open(transcript_path) as file:
+        transcript = file.read().strip()
         
-        transcript_path = os.path.join(transcript_dir, speaker_id, file_name)
-        with open(transcript_path) as file:
-          transcript = file.read().strip()
-          
-        if transcript is None:
-          logger.warning(f'Error reading transcript file {transcript_path}. Skipping sample.')
-          continue
-        elif transcript == "":
-          logger.warning(f'Transcript from file {transcript_path} was read but is empty. Skipping sample.')
-          continue
-        
-        melspec_path = transcript_path.replace(transcript_dir, melspec_dir).replace('.txt', '.h5')
+      if transcript is None:
+        logger.warning(f'Error reading transcript file {transcript_path}. Skipping sample.')
+        return None
+      elif transcript == "":
+        logger.warning(f'Transcript from file {transcript_path} was read but is empty. Skipping sample.')
+        return None
 
-        # TODO: Fix this it's ugly. Or maybe not.
-        if not os.path.exists(melspec_path):
-          logger.warning(f'Transcript has no matching melspec in {melspec_path}. Skipping sample.')
-          continue
+      file_name = os.path.basename(file_path)
+      melspec_path = file_path
+      sample = MelspecSample(file_name,
+                             speaker_id,
+                             melspec_path,
+                             transcript,
+                             info['age'],
+                             info['gender'],
+                             info['accent'])
 
-        sample = MelspecSample(file_name,
-                               speaker_id,
-                               melspec_path,
-                               transcript,
-                               info['age'],
-                               info['gender'],
-                               info['accent'])
+      return sample
+        
+    samples = joblib.Parallel(n_jobs=8)(
+      joblib.delayed(load_sample)(file_path, speaker_id)
+        for file_path, speaker_id in args)
+    
+    old_len = len(samples)
+    self.samples = [sample for sample in samples if sample is not None]
+    new_len = len(self.samples)
+    logger.info(f"Removed {old_len - new_len} None samples from dataset of length {old_len}.")
+    
+    # Re-organise samples into a dictionary with transcripts as keys and sample indices as values
+    for si, sample in enumerate(self.samples):
+      transcript = sample.transcript
+      if transcript not in self.transcript_dict:
+        self.transcript_dict[transcript] = []
 
-        self.samples.append(sample)
+      self.transcript_dict[transcript].append(si)
         
-        if transcript not in self.transcript_dict:
-          self.transcript_dict[transcript] = []
-        
-        latest_sample_idx = len(self.samples) - 1
-        self.transcript_dict[transcript].append(latest_sample_idx)
-        
+    # Sanity check to assert that every sample is represented in the transcript dict
     if sorted(np.concatenate(list(self.transcript_dict.values())).tolist()) != sorted(list(range(len(self.samples)))):
       raise ValueError(f"Enry indices do not line up. Sentence dict indices:\n{np.concatenate(list(self.transcript_dict.values()))}\n" 
                        f"Actual indices:\n{list(range(len(self.samples)))}")
@@ -486,7 +496,7 @@ if __name__ == "__main__":
           'test set len',
           'sample idx lengths',
           'validation',
-          'distribution'][2]
+          'distribution'][4]
 
   factory = ParallelDatasetFactory(dataset_dir = "../Data/processed/VCTK")
   

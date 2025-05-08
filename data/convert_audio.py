@@ -136,27 +136,31 @@ def audio_file_to_melspec(src_filepath: str, dst_filepath: str, config: dict, ov
     
     # Trim the spectrogram
     if trim_silence:
-      # Get mean at each frame
-      melspec_mean = np.mean(melspec, axis=0)
+      # Get mean over 20 frames to smooth out the signal
+      melspec_mean = []
+      for fi in range(melspec.shape[-1] - 20):
+        melspec_mean.append(np.mean(melspec[:, fi:fi+20]))
+      melspec_mean = np.array(melspec_mean)
+      
       val_range = np.max(melspec_mean) - np.min(melspec_mean)
       # Calculate the threshold
       threshold = np.min(melspec_mean) + val_range * trim_power_ratio
-      # Find first frame above threshold and clip 20 frames before
-      start_frame = max(np.argmax(melspec_mean > threshold) - 20, 0)
-      # Find last frame above threshold and clip 20 frames after
-      end_frame = max(np.argmax(melspec_mean[::-1] > threshold) - 20, 0)
+      # Find first frame above threshold and clip 10 frames before
+      start_frame = max(np.argmax(melspec_mean > threshold) - 10, 0)
+      # Find last frame above threshold and clip 10 frames after
+      end_frame = max(np.argmax(melspec_mean[::-1] > threshold) - 10, 0)
       end_frame = len(melspec_mean) - end_frame
       
-      # fig, axes = plt.subplots(2,1)
-      # axes[0].imshow(melspec, aspect='auto')
-      # axes[0].set_title('Mel-spectrogram')
+      fig, axes = plt.subplots(2,1)
+      axes[0].imshow(melspec, aspect='auto')
+      axes[0].set_title('Mel-spectrogram')
       
       # Clip the mel-spectrogram
       melspec = melspec[:, start_frame:end_frame]
       
-      # axes[1].imshow(melspec, aspect='auto')
-      # axes[1].set_title('Trimmed Mel-spectrogram')
-      # plt.show()
+      axes[1].imshow(melspec, aspect='auto')
+      axes[1].set_title('Trimmed Mel-spectrogram')
+      plt.show()
       # ""
       
     # Ensure output directory exists, then save melspec in HDF5 format
