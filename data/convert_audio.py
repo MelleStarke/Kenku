@@ -79,8 +79,8 @@ def audio_file_to_melspec(src_filepath: str, dst_filepath: str, config: dict, ov
       src_filepath (str): Path to the source audio file.
       dst_filepath (str): Path where the output HDF5 file will be saved.
       kwargs (dict): Dictionary of parameters, including:
-        - 'trim_silence' (bool): If True, leading and trailing silence is trimmed based on `top_db`.
-        - 'top_db' (int): The dB threshold for silence trimming.
+        - 'no_trim' (bool): If True, leading and trailing silence is not trimmed (based on `trim_power_ratio`).
+        - 'trim_power_ratio' (float): The dB threshold for silence trimming.
         - 'fft_size' (int): FFT size (Frame length) for the STFT and mel-spectrogram calculation.
         - 'hop_size' (int): hop size (Frame shift) between consecutive STFT frames.
         - 'min_freq' (int): Minimum frequency (in Hz) of the mel basis calculation.
@@ -100,8 +100,8 @@ def audio_file_to_melspec(src_filepath: str, dst_filepath: str, config: dict, ov
     # warnings.filterwarnings('ignore')
     
     # Defaults found in ln. 105-112 and 23-31 in ConvS2S_VC/extract_features.py)
-    trim_silence = config['trim_silence']  # default True
-    top_db = config['top_db']  # default 30
+    trim_silence = not config['no_trim']  # default True
+    trim_power_ratio = config['trim_power_ratio']  # default 30
     fft_size = config['fft_size']  # default 1024
     hop_size = config['hop_size']  # default 128 / 256
     min_freq = config['min_freq']  # default 80 / 0
@@ -112,10 +112,10 @@ def audio_file_to_melspec(src_filepath: str, dst_filepath: str, config: dict, ov
     # Load the audio file
     audio, base_samp_rate = sf.read(src_filepath)
     
-    # Optionally trim silence
-    if trim_silence:
-      # TODO: why manual frame length and shift if we can use config above?
-      audio, _ = librosa.effects.trim(audio, top_db=top_db, frame_length=512, hop_length=128, aggregate=np.mean)
+    # # Optionally trim silence
+    # if trim_silence:
+    #   # TODO: why manual frame length and shift if we can use config above?
+    #   audio, _ = librosa.effects.trim(audio, frame_length=512, hop_length=128, aggregate=np.mean)
 
     # Resample if the base sampling rate doesn't match the target rate
     if base_samp_rate != samp_rate:
@@ -134,6 +134,31 @@ def audio_file_to_melspec(src_filepath: str, dst_filepath: str, config: dict, ov
     # Convert to float32 and transpose to (n_mels, n_frames)
     melspec = melspec.astype(np.float32).T
     
+    # Trim the spectrogram
+    if trim_silence:
+      # Get mean at each frame
+      melspec_mean = np.mean(melspec, axis=0)
+      val_range = np.max(melspec_mean) - np.min(melspec_mean)
+      # Calculate the threshold
+      threshold = np.min(melspec_mean) + val_range * trim_power_ratio
+      # Find first frame above threshold and clip 20 frames before
+      start_frame = max(np.argmax(melspec_mean > threshold) - 20, 0)
+      # Find last frame above threshold and clip 20 frames after
+      end_frame = max(np.argmax(melspec_mean[::-1] > threshold) - 20, 0)
+      end_frame = len(melspec_mean) - end_frame
+      
+      # fig, axes = plt.subplots(2,1)
+      # axes[0].imshow(melspec, aspect='auto')
+      # axes[0].set_title('Mel-spectrogram')
+      
+      # Clip the mel-spectrogram
+      melspec = melspec[:, start_frame:end_frame]
+      
+      # axes[1].imshow(melspec, aspect='auto')
+      # axes[1].set_title('Trimmed Mel-spectrogram')
+      # plt.show()
+      # ""
+      
     # Ensure output directory exists, then save melspec in HDF5 format
     if not os.path.exists(os.path.dirname(dst_filepath)):
       os.makedirs(os.path.dirname(dst_filepath), exist_ok=True)
@@ -143,6 +168,14 @@ def audio_file_to_melspec(src_filepath: str, dst_filepath: str, config: dict, ov
 
     # Log success and shape of the extracted mel-spectrogram
     logger.info(f"Saving to {dst_filepath}... melspec shape: [{melspec.shape}].")
+
+    # Calculate statistics for normalization
+    melspec_transposed = melspec.T  # (n_frames, n_mels)
+    sum_stats = np.sum(melspec_transposed, axis=0)  # Sum along frames
+    sum_squared_stats = np.sum(np.square(melspec_transposed), axis=0)  # Sum of squares
+    count = melspec_transposed.shape[0]  # Number of frames
+    
+    return (sum_stats, sum_squared_stats, count)
 
   except Exception as e:
     # Log failure if something goes wrong
@@ -196,7 +229,7 @@ def logmelfilterbank(audio,
 ### Normalization ###
 #####################
 
-def calc_norm_scaler(melspec_datapath: str, scaler_filepath: str):
+def calc_norm_scaler(melspec_datapath: str):
   """
   Use sklearn.preprocessing.StandardScaler to calculate the mean and standard deviations
   for each mel feature (i.e. frequency) across all timepoints in all mel-spectrograms.
@@ -220,13 +253,36 @@ def calc_norm_scaler(melspec_datapath: str, scaler_filepath: str):
     # Transpose to (n_frames, n_mels) to match StandardScaler's expected input shape.
     # As it expects equal dimensionality at axis 1
     melspec_scaler.partial_fit(melspec.T)
-    
-  # Save the fitted scaler (which contains the mean and variance) to a pickle file
-  with open(scaler_filepath, mode='wb') as f:
-    pickle.dump(melspec_scaler, f)
   
   return melspec_scaler
  
+def calc_norm_scaler_from_stats(results):
+  results = [r for r in results if r is not None]
+  
+  if results:
+    num_mels = len(results[0][0])
+    # Combine statistics from all processed files
+    total_sum = np.zeros(num_mels, dtype=np.float64)
+    total_sum_squared = np.zeros(num_mels, dtype=np.float64)
+    total_count = 0
+    
+    for sum_stats, sum_squared_stats, count in results:
+      total_sum += sum_stats
+      total_sum_squared += sum_squared_stats
+      total_count += count
+    
+    # Calculate mean and variance
+    mean = total_sum / total_count
+    variance = (total_sum_squared / total_count) - np.square(mean)
+    std = np.sqrt(variance)
+    
+    # Create and save scaler
+    norm_scaler = StandardScaler()
+    norm_scaler.mean_ = mean
+    norm_scaler.scale_ = std
+    norm_scaler.var_ = variance
+    
+    return norm_scaler
 
 def apply_norm_scaler(melspec_filepath: str, scaler: BaseEstimator):
   
@@ -294,9 +350,10 @@ def main():
   parser.add_argument('--hop-size', '-s', type=int, default=128, help='Frame shift (hop size) in samples.')
   parser.add_argument('--min-freq', type=int, default=80, help='Minimum frequency for mel filterbank (Hz).')
   parser.add_argument('--max-freq', type=int, default=7600, help='Maximum frequency for mel filterbank (Hz).')
-  parser.add_argument('--trim-silence', action='store_true',
+  parser.add_argument('--no-trim', action='store_true',
                       help='If set, trim leading and trailing silence from audio.')
-  parser.add_argument('--top-db', type=int, default=30, help='Trimming threshold in dB for silence removal.')
+  parser.add_argument('--trim-power-ratio', type=float, default=0.6, help='Trimming threshold for silence removal, as a proportion of the power range.' \
+                                                                          'Leaves 20 buffer frames on either side. Defaults to 0.6 (60% of the power range).')
     
   args = parser.parse_args()
 
@@ -319,20 +376,25 @@ def main():
         'hop_size': args.hop_size,
         'min_freq': args.min_freq,
         'max_freq': args.max_freq,
-        'trim_silence': args.trim_silence,
-        'top_db': args.top_db
+        'no_trim': args.no_trim,
+        'trim_power_ratio': args.trim_power_ratio
     }
     
     overwrite = not args.no_overwrite
     
     if not os.path.exists(os.path.dirname(configpath)):
       os.makedirs(os.path.dirname(configpath))
+      
+    # If overwriting files, but a config file already exists, set normalized to False.
+    elif overwrite:
+      data_config['normalized'] = False
     
     # Warn the user if trying to keep melspec data made with a different config.
     elif not overwrite and not data_config == load_config(configpath):
       logger.warning(("Keeping old melspecs despite configs not matching.\n" 
                      f"\tOld config:\n{dict(sorted(load_config(configpath).items()))}\n\n" 
                      f"\tNew config:\n{dict(sorted(data_config.items()))}\n"))
+    
       
     save_config(data_config, configpath)
 
@@ -350,6 +412,7 @@ def main():
       'overwrite': overwrite
     }
 
+    print(f'Trimming set to {not args.no_trim}.')
     print('Converting audio files to mel-spectrograms...')
 
     # Process all files in parallel
@@ -364,8 +427,18 @@ def main():
   norm_scaler_filepath = os.path.join(os.path.dirname(dest_dir), 'norm_scaler.pkl')
   
   if args.calc_norm:
-    print("Calculating normalization scaler...")
-    norm_scaler = calc_norm_scaler(dest_dir, norm_scaler_filepath)
+    if convert and results is not None:
+      print("Calculating normalization scaler from accumulated stats directly...")
+      norm_scaler = calc_norm_scaler_from_stats(results)
+      
+    else:
+      print("Calculating normalization scaler from files...")
+      norm_scaler = calc_norm_scaler(dest_dir)
+    
+    print(f"Normalization stats:\n  Mean: {norm_scaler.mean_}\n  STD:  {norm_scaler.scale_}\n  Var:  {norm_scaler.var_}")
+    # Save the fitted scaler (which contains the mean and variance) to a pickle file
+    with open(norm_scaler_filepath, mode='wb') as f:
+      pickle.dump(norm_scaler_filepath, f)
 
   #=== Normalization Stat Application ===#
   
