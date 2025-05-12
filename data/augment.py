@@ -169,13 +169,14 @@ class MelspecTransform(ABC):
   
 
 class AlignedRandomClip(MelspecTransform):
-  def __init__(self, max_clip_ratio: float = 0.2):
-    assert 0.0 < max_clip_ratio < 0.5, "max_clip_ratio is used on both sides of the spectrogram. " \
-    f"Therefore it should be in the range (0.0, 0.5). Got: max_clip_ratio = {max_clip_ratio}"
+  def __init__(self, max_clip_ratio: float = 0.7):
+    assert 0.0 < max_clip_ratio < 1.0, f"max_clip_ratio must be within (0.0, 1.0). Got: max_clip_ratio = {max_clip_ratio}"
     
     self.max_clip_ratio   = max_clip_ratio
     
   def __call__(self, src_mel: Tensor, tgt_mel: Tensor):
+    n_src_frames = src_mekl.shape[-1]
+    n_tgt_frames = tgt_mekl.shape[-1]
     # Compute DTW path
     _, path = compute_dtw(src_mel, tgt_mel)
     # Convert to numpy array for easy indexing
@@ -189,43 +190,100 @@ class AlignedRandomClip(MelspecTransform):
     path_length = len(path)
     max_clip = int(self.max_clip_ratio * path_length)
     
-    # Try to find a correct clipping
-    max_attempts = 100
-    for attempt in range(max_attempts):
-      # Choose random start point
-      start_idx = rng.integers(max_clip + 1)
-      end_idx = path_length - rng.integers(max_clip + 1) - 1
+    # Randomly (uniform) determine how many steps in the path
+    # should be clipped from either side.
+    n_clipped_steps = rng.integers(max_clip)
+    start_idx = rng.integers(n_clipped_frames)
+    end_idx = path_length - n_clipped_frames + start_idx
+    
+    # Get corresponding indices in original spectrograms
+    src_start, src_end = src_indices[start_idx], src_indices[end_idx]
+    tgt_start, tgt_end = tgt_indices[start_idx], tgt_indices[end_idx]
+    
+    # Get the resulting ratios of clipped frames to total frames for both spectrograms
+    src_clip_ratio - 1 - (src_end - src_start) / n_src_frames
+    tgt_clipped_ratio - 1 - (tgt_end - tgt_start) / n_tgt_frames
+    
+    # Since clipping the DTW path directly can result in over-clipping the spectrograms,
+    # we must account for this by continuously un-clipping (i.e. expanding) the path indices
+    # until we end up with spectrograms within the specified clipping ratio.
+    # This may result in over-representation of the maximum clipping amount per specotrgram.
+    while src_clip_ratio > self.max_clip_ratio or tgt_clipped_ratio > self.max_clip_ratio:
       
-      # Get corresponding indices in original spectrograms
+      expandable_left = start_idx > 0
+      expandable_right = end_idx < path_length - 1
+      
+      # Break out of the loop if the spectrogram is already fully unclipped
+      if not (expandable_left or expandable_right):
+        break
+      
+      # Flip between expanding left and right at each iteration by maling it conditional
+      # on the new amount of (un)clipped frames
+      n_unclipped_steps = end_idx - start_idx
+      expand_left = (n_unclipped_frames) % 2 == 0
+      
+      # Flip the expansion direction if there are no more frames to unclip there.
+      if expand_left and not expandable_left or (not expand_left) and not expandable_right:
+        expand_left = not expand_left
+        
+      # Expand (i.e. un-clip) a single frame from either side
+      if expand_left:
+        start_idx += 1
+      else:
+        end_idx -= 1
+      
+      # Re-calculate the new src and tgt indices and the resulting ratios
       src_start, src_end = src_indices[start_idx], src_indices[end_idx]
       tgt_start, tgt_end = tgt_indices[start_idx], tgt_indices[end_idx]
       
-      # Check if the start indices are smaller than end indices
-      if src_end - src_start <= 0 or tgt_end - tgt_start <= 0:
-        continue  # Try again
-      
-      # Clip the spectrograms
-      clipped_src = src_mel[..., src_start:src_end]
-      clipped_tgt = tgt_mel[..., tgt_start:tgt_end]
-      
-      # Check if the frame dimension wasn't removed
-      if len(clipped_src.shape) < 2 or len(clipped_tgt.shape) < 2:
-        continue  # Try again
-      
-      clipped_src_ratio = clipped_src.shape[-1] / src_mel.shape[-1]
-      clipped_tgt_ratio = clipped_tgt.shape[-1] / tgt_mel.shape[-1]
-      
-      if    clipped_src_ratio < 1 - self.max_clip_ratio * 2 \
-         or clipped_src_ratio < 1 - self.max_clip_ratio * 2:
-           continue  # Try again
-      
-       
-      return clipped_src, clipped_tgt
+      src_clip_ratio - 1 - (src_end - src_start) / n_src_frames
+      tgt_clipped_ratio - 1 - (tgt_end - tgt_start) / n_tgt_frames
     
-    # Failsafe. Return unmodified spectrograms if no valid clipping was found.
-    else:
-      logger.warning(f"Not able to find a correct clipping after {max_attempts} attempts.")
-      return src_mel, tgt_mel
+    # Clip the spectrograms
+    clipped_src = src_mel[..., src_start:src_end]
+    clipped_tgt = tgt_mel[..., tgt_start:tgt_end]     
+    
+    return clipped_src, clipped_tgt
+
+      
+    # path_length = len(path)
+    # max_clip = int(self.max_clip_ratio * path_length)
+    
+    # max_attempts = 100
+    # for attempt in range(max_attempts):
+    # # Try to find a correct clipping
+    #   n_clipped_steps = rng.integers(max_clip)
+    #   start_idx = rng.integers(n_clipped_frames)
+    #   end_idx = path_length - n_clipped_frames + start_idx
+      
+    #   # Get corresponding indices in original spectrograms
+    #   src_start, src_end = src_indices[start_idx], src_indices[end_idx]
+    #   tgt_start, tgt_end = tgt_indices[start_idx], tgt_indices[end_idx]
+      
+    #   # Check if the start indices are smaller than end indices
+    #   if src_end - src_start <= 0 or tgt_end - tgt_start <= 0:
+    #     continue  # Try again
+      
+    #   # Clip the spectrograms
+    #   clipped_src = src_mel[..., src_start:src_end]
+    #   clipped_tgt = tgt_mel[..., tgt_start:tgt_end]
+      
+    #   # Check if the frame dimension wasn't removed
+    #   if len(clipped_src.shape) < 2 or len(clipped_tgt.shape) < 2:
+    #     continue  # Try again
+      
+    #   clipped_src_ratio = clipped_src.shape[-1] / src_mel.shape[-1]
+    #   clipped_tgt_ratio = clipped_tgt.shape[-1] / tgt_mel.shape[-1]
+      
+    #   if    clipped_src_ratio < 1 - self.max_clip_ratio * 2 \
+    #      or clipped_src_ratio < 1 - self.max_clip_ratio * 2:
+    #        continue  # Try again
+    
+  # # Failsafe. Return unmodified spectrograms if no valid clipping was found.
+  # else:
+  #   logger.warning(f"Not able to find a correct clipping after {max_attempts} attempts.")
+  #   return src_mel, tgt_mel
+      
 
 
 class RandomStretchedTimeWarp(MelspecTransform):

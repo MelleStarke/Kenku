@@ -354,7 +354,7 @@ def train_model(model: KenkuModel,
   model.train()
 
   for epoch in range(epochs):
-    print(f"#=== Epoch {epoch} ===#")
+    print(f"\n#=== Epoch {epoch} ===#")
     # TODO: Maybe do this at the end of the epoch.
     DAL_weight = DAL_weight_init * np.exp(-epoch * DAL_weight_decay)
     
@@ -364,14 +364,13 @@ def train_model(model: KenkuModel,
 
     running_loss = []
 
-    for batch_index, batch in tqdm(enumerate(train_loader), total=len(train_loader), mininterval=5.):
+    for batch_index, batch in tqdm(enumerate(train_loader), total=len(train_loader), mininterval=20.):
       batch = recursive_to_device(batch, device)
       
       tensorboard_manager.inform(epoch, batch_index)
       checkpoint_manager.inform(epoch, batch_index)
 
       model.clear_paddings()
-      # TODO: make stack_factor a param at init
       loss, A = model.calc_loss(*batch, main_loss_fn=main_loss_fn, loss_weights=loss_weights)
 
       model.zero_grad()

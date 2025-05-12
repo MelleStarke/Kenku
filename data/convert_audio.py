@@ -151,16 +151,16 @@ def audio_file_to_melspec(src_filepath: str, dst_filepath: str, config: dict, ov
       end_frame = max(np.argmax(melspec_mean[::-1] > threshold) - 10, 0)
       end_frame = len(melspec_mean) - end_frame
       
-      fig, axes = plt.subplots(2,1)
-      axes[0].imshow(melspec, aspect='auto')
-      axes[0].set_title('Mel-spectrogram')
+      # fig, axes = plt.subplots(2,1)
+      # axes[0].imshow(melspec, aspect='auto')
+      # axes[0].set_title('Mel-spectrogram')
       
       # Clip the mel-spectrogram
       melspec = melspec[:, start_frame:end_frame]
       
-      axes[1].imshow(melspec, aspect='auto')
-      axes[1].set_title('Trimmed Mel-spectrogram')
-      plt.show()
+      # axes[1].imshow(melspec, aspect='auto')
+      # axes[1].set_title('Trimmed Mel-spectrogram')
+      # plt.show()
       # ""
       
     # Ensure output directory exists, then save melspec in HDF5 format
