@@ -5,7 +5,8 @@ import torch
 
 from torch import Tensor, is_tensor
 from torch.nn import functional as F
-from typing import List, Tuple, Union, Optional
+from torch.nn.parameter import Parameter
+from typing import List, Tuple, Union, Optional, Iterator
 from pathlib import Path
 
 
@@ -170,6 +171,25 @@ def ortho_att_loss(A: Tensor, src_mask: Tensor, tgt_sigma = 0.3):
   ortho_att_loss = torch.sum(torch.mean(A.matmul(A_T) * target_distance_matrices, dim=1)) / torch.sum(src_mask)
   
   return ortho_att_loss
+
+def L2_regularization(parameters: Iterator[Parameter], weight=0.01):
+  """
+  L2 regularization for all parameters in the model.
+  
+  Args:
+      model: The model to apply L2 regularization to.
+      lambda_l2: The L2 regularization coefficient.
+      
+  Returns:
+      The L2 regularization loss.
+  """
+  l2_loss = torch.tensor(0., device=device)
+  
+  for param in parameters:
+    if param.requires_grad:
+      l2_loss += torch.sum(param ** 2)
+  
+  return weight * l2_loss
 
 
 if __name__ == "__main__":

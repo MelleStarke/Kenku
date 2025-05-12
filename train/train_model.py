@@ -24,7 +24,7 @@ from torchvision.utils import make_grid
 from tqdm import tqdm
 
 # Local imports
-from data.load import ParallelDatasetFactory, ParallelMelspecDataset, collate_fn
+from data.load import ParallelDatasetFactory, ParallelMelspecDataset, collate_fn, augmented_collate_fn
 from data.util import save_config, load_config, config_to_str, recursive_to_device, recursive_map
 from network.modules import KameBlock
 from network import KenkuModel, KenkuTeacher, KenkuStudent, stack_frames, unstack_frames, append_zero_frame
@@ -118,7 +118,7 @@ class CheckpointManager:
           
         
       # Ensure checkpoints get removed to prevent excessive data storage.
-      n_checkpoints = len([os.path.isfile(f) for f in os.listdir(self.save_path)])
+      n_checkpoints = len([f for f in os.listdir(self.save_path) if f.endswith('.pt')])
       
       if n_checkpoints > self.max_checkpoints + 1:
         logger.warning(f"The amount of checkpoints in {self.save_path} ({n_checkpoints}) " 
@@ -259,6 +259,7 @@ class TensorboardManager:
     for name, loss in test_losses.items():
       self.writer.add_scalar('test loss/' + name, loss, global_step=self.global_step)
 
+    logger.info(f"[Model: {os.path.basename(self.writer.log_dir)}] Test loss: {' | '.join([f'{name}: {loss:.4}' for name, loss in test_losses.items()])}")
     
     self.checkpoint_manager.latest_test_loss = test_losses['main loss']
 
@@ -343,9 +344,12 @@ def train_model(model: KenkuModel,
                 epochs: int             = 10,
                 train_loss_interval     = 100,
                 DAL_weight: float       = 0.,
+                OAL_weight: float       = 0.,
                 DAL_weight_decay: float = None):
 
   DAL_weight_init = DAL_weight
+  OAL_weight_init = OAL_weight
+  
   if DAL_weight_decay is None:
     DAL_weight_decay = 4 / epochs
     
@@ -357,8 +361,9 @@ def train_model(model: KenkuModel,
     print(f"\n#=== Epoch {epoch} ===#")
     # TODO: Maybe do this at the end of the epoch.
     DAL_weight = DAL_weight_init * np.exp(-epoch * DAL_weight_decay)
+    OAL_weight = OAL_weight_init * np.exp(-epoch * DAL_weight_decay)
     
-    loss_weights = [DAL_weight, DAL_weight]
+    loss_weights = [DAL_weight, OAL_weight]
     if is_student:
       loss_weights = [1, *loss_weights]
 
@@ -394,6 +399,10 @@ def main():
   print(f'Time: {datetime.now().strftime("%H:%M:%S")}')
 
   parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter)
+  
+  parser.add_argument('--config-dir', type=str, default="", metavar='STR',
+                      help='Optional directory where the config files are stored.\n\n')
+  
   
   parser.add_argument('--dataset-config-path', type=str, default="", metavar='STR',
                       help='Optional path to a dataset config file (.json). Used instead of parsed arguments.\n\n')
@@ -456,6 +465,8 @@ def main():
                       help='Betas use for the Adam optimizer.')
   parser.add_argument('--DAL-weight', '-wda', type=float, default=2000., metavar='FLOAT',
                       help='Starting value of the diagonal attention loss weight.')
+  parser.add_argument('--OAL-weight', '-woa', type=float, default=2000., metavar='FLOAT',
+                      help='Starting value of the orthogonal attention loss weight.')
   parser.add_argument('--DAL-weight-decay', '-wdad', type=float, default=None, metavar='FLOAT',
                       help='Decay rate for the diagonal attention loss weight. Defaults to 4 / epochs. ' 
                             'Decay steps are done through wda <- wda * exp(-epoch * wda_decay).')
@@ -514,7 +525,7 @@ def main():
   model_config = create_config_dict(args_dict, model_config_keys, args.model_config_path)
   
   # Training Config
-  train_config_keys = ['epochs', 'main_loss', 'learning_rate', 'adam_betas', 'batch_size', 'DAL_weight', 'DAL_weight_decay', 
+  train_config_keys = ['epochs', 'main_loss', 'learning_rate', 'adam_betas', 'batch_size', 'DAL_weight', 'OAL_weight', 'DAL_weight_decay', 
                        'test_interval', 'melspec_interval', 'max_test_batches', 'run_dir', 'checkpoint_interval', 
                        'checkpoint_max', 'from_checkpoint', 'no_log']
   train_config = create_config_dict(args_dict, train_config_keys, args.train_config_path)
@@ -543,12 +554,11 @@ def main():
     'batch_size'  : train_config['batch_size'],
     'shuffle'     : True,
     'num_workers' : dataset_config['n_cores'],
-    'collate_fn'  : collate_fn,
     'drop_last'   : True,
     'pin_memory'  : True
   }
-  train_loader = DataLoader(train_set, **data_loader_kwargs)
-  test_loader  = DataLoader(test_set,  **data_loader_kwargs)
+  train_loader = DataLoader(train_set, collate_fn=augmented_collate_fn, **data_loader_kwargs)
+  test_loader  = DataLoader(test_set,  collate_fn=collate_fn, **data_loader_kwargs)
   
   print((f"Num train samples: {len(train_set)}\n" 
          f"Num test samples : {len(test_set)}\n\n" 
@@ -691,6 +701,7 @@ def main():
               main_loss_fn     = train_config['main_loss'],
               epochs           = train_config['epochs'],
               DAL_weight       = train_config['DAL_weight'],
+              OAL_weight       = train_config['OAL_weight'],
               DAL_weight_decay = train_config['DAL_weight_decay']
               )
 

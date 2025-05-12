@@ -175,8 +175,8 @@ class AlignedRandomClip(MelspecTransform):
     self.max_clip_ratio   = max_clip_ratio
     
   def __call__(self, src_mel: Tensor, tgt_mel: Tensor):
-    n_src_frames = src_mekl.shape[-1]
-    n_tgt_frames = tgt_mekl.shape[-1]
+    n_src_frames = src_mel.shape[-1]
+    n_tgt_frames = tgt_mel.shape[-1]
     # Compute DTW path
     _, path = compute_dtw(src_mel, tgt_mel)
     # Convert to numpy array for easy indexing
@@ -192,23 +192,24 @@ class AlignedRandomClip(MelspecTransform):
     
     # Randomly (uniform) determine how many steps in the path
     # should be clipped from either side.
-    n_clipped_steps = rng.integers(max_clip)
-    start_idx = rng.integers(n_clipped_frames)
-    end_idx = path_length - n_clipped_frames + start_idx
+    n_clipped_steps = rng.integers(1, max_clip)
+    start_idx = rng.integers(n_clipped_steps)
+    end_idx = path_length - n_clipped_steps + start_idx
     
     # Get corresponding indices in original spectrograms
     src_start, src_end = src_indices[start_idx], src_indices[end_idx]
     tgt_start, tgt_end = tgt_indices[start_idx], tgt_indices[end_idx]
     
     # Get the resulting ratios of clipped frames to total frames for both spectrograms
-    src_clip_ratio - 1 - (src_end - src_start) / n_src_frames
-    tgt_clipped_ratio - 1 - (tgt_end - tgt_start) / n_tgt_frames
+    src_clip_ratio = 1 - (src_end - src_start) / n_src_frames
+    tgt_clip_ratio = 1 - (tgt_end - tgt_start) / n_tgt_frames
     
     # Since clipping the DTW path directly can result in over-clipping the spectrograms,
     # we must account for this by continuously un-clipping (i.e. expanding) the path indices
     # until we end up with spectrograms within the specified clipping ratio.
     # This may result in over-representation of the maximum clipping amount per specotrgram.
-    while src_clip_ratio > self.max_clip_ratio or tgt_clipped_ratio > self.max_clip_ratio:
+    # Edit: after rudimentary testing over 800 samples, this seems to happen at a rate of 1/10.
+    while src_clip_ratio > self.max_clip_ratio or tgt_clip_ratio > self.max_clip_ratio:
       
       expandable_left = start_idx > 0
       expandable_right = end_idx < path_length - 1
@@ -220,25 +221,25 @@ class AlignedRandomClip(MelspecTransform):
       # Flip between expanding left and right at each iteration by maling it conditional
       # on the new amount of (un)clipped frames
       n_unclipped_steps = end_idx - start_idx
-      expand_left = (n_unclipped_frames) % 2 == 0
+      expand_left = (n_unclipped_steps) % 2 == 0
       
       # Flip the expansion direction if there are no more frames to unclip there.
-      if expand_left and not expandable_left or (not expand_left) and not expandable_right:
+      if expand_left and not expandable_left or (expand_right:=not expand_left) and not expandable_right:
         expand_left = not expand_left
         
       # Expand (i.e. un-clip) a single frame from either side
       if expand_left:
-        start_idx += 1
+        start_idx -= 1
       else:
-        end_idx -= 1
+        end_idx += 1
       
       # Re-calculate the new src and tgt indices and the resulting ratios
       src_start, src_end = src_indices[start_idx], src_indices[end_idx]
       tgt_start, tgt_end = tgt_indices[start_idx], tgt_indices[end_idx]
       
-      src_clip_ratio - 1 - (src_end - src_start) / n_src_frames
-      tgt_clipped_ratio - 1 - (tgt_end - tgt_start) / n_tgt_frames
-    
+      src_clip_ratio = 1 - (src_end - src_start) / n_src_frames
+      tgt_clip_ratio = 1 - (tgt_end - tgt_start) / n_tgt_frames
+  
     # Clip the spectrograms
     clipped_src = src_mel[..., src_start:src_end]
     clipped_tgt = tgt_mel[..., tgt_start:tgt_end]     
@@ -302,6 +303,7 @@ class RandomStretchedTimeWarp(MelspecTransform):
                max_mag:     float = 0.9,
                min_stretch: float = 0.7,
                max_stretch: float = 1.3,
+               max_frames: int = 2000,
   ):
     self.min_sines = min_sines
     self.max_sines = max_sines
@@ -313,6 +315,7 @@ class RandomStretchedTimeWarp(MelspecTransform):
     self.max_mag = max_mag
     self.min_stretch = min_stretch
     self.max_stretch = max_stretch
+    self.max_frames = max_frames
   
   def create_warp_matrix(self, warped_idxs: np.ndarray, n_src_frames=None):
     n_tgt_frames = len(warped_idxs)
@@ -339,6 +342,7 @@ class RandomStretchedTimeWarp(MelspecTransform):
   def apply_time_warp(self, melspec, warp_matrix=None, ax=None):
     n_src_frames = melspec.shape[-1]
     n_warp_frames = int(rng.uniform(self.min_stretch, self.max_stretch) * n_src_frames)
+    n_warp_frames = min(n_warp_frames, self.max_frames)
     
     if warp_matrix is None:
       composite_fn = compose_random_sines(max_period=n_warp_frames,

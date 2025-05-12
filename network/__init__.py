@@ -12,7 +12,7 @@ from pathlib import Path
 
 from network.modules import KameBlock, ScaledDotProductAttention, AttentionPredictor
 
-from train.loss import mse_loss, mae_loss, auxil_att_loss, diag_att_loss, ortho_att_loss
+from train.loss import mse_loss, mae_loss, auxil_att_loss, diag_att_loss, ortho_att_loss, L2_regularization
 
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -366,6 +366,9 @@ class KenkuTeacher(KenkuModel):
     
     for lw, loss_term in zip(loss_weights, [da_loss, oa_loss]):
       total_loss += lw * loss_term
+      
+    # Add regularization
+    total_loss += L2_regularization(self.parameters())
       
     return total_loss, A
     

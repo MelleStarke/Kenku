@@ -88,11 +88,6 @@ def collate_fn(batch):
                               3.) source masks,              4.) target masks,
                               5.) source speaker info, 6.) target speaker info.
   """
-  #=== Augmentation ===#
-  augment_fn = get_default_augment_fn()
-  
-  batch = [(*augment_fn(src_mel, tgt_mel), src_info, tgt_info)
-           for src_mel, tgt_mel, src_info, tgt_info in batch]
   
   #=== Batching ===#
   batch_size = len(batch)
@@ -139,6 +134,14 @@ def collate_fn(batch):
           src_mask_batch,    tgt_mask_batch, 
           src_info_batch,    tgt_info_batch)
     
+def augmented_collate_fn(batch):
+  #=== Augmentation ===#
+  augment_fn = get_default_augment_fn()
+  
+  batch = [(*augment_fn(src_mel, tgt_mel), src_info, tgt_info)
+           for src_mel, tgt_mel, src_info, tgt_info in batch]
+
+  return collate_fn(batch)
     
 @dataclass
 class MelspecSample:
@@ -235,14 +238,13 @@ class ParallelDatasetFactory(SpeakerInfoMixin):
         return None
 
       file_name = os.path.basename(file_path)
-      melspec_path = file_path
-      sample = MelspecSample(file_name,
-                             speaker_id,
-                             melspec_path,
-                             transcript,
-                             info['age'],
-                             info['gender'],
-                             info['accent'])
+      sample = MelspecSample(id=file_name,
+                             speaker_id=speaker_id,
+                             melspec_path=file_path,
+                             transcript=transcript,
+                             age=info['age'],
+                             gender=info['gender'],
+                             accent=info['accent'])
 
       return sample
         
