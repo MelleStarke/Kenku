@@ -4,6 +4,25 @@ import argparse
 from itertools import product
 
 from data.util import save_config
+  
+# variable_settings = {
+#   'stack_factor': [2, 4, 8],
+#   'hidden_ch': [1, 12, 128],
+#   'dropout_rate': [0.2, 0.5],
+#   'learning_rate': [1e-5, 5e-5, 1e-6],
+#   'att_weight': [200, 2000],
+#   'OAL_weight_on': [True, False],
+#   'att_weight_decay': [4, 16],
+# }
+variable_settings = {
+  'stack_factor': [4],
+  'hidden_ch': [1, 12],
+  'dropout_rate': [0.2, 0.5],
+  'learning_rate': [5e-5],
+  'att_weight': [2000],
+  'OAL_weight_on': [True],
+  'att_weight_decay': [16],
+}
 
 shorthand_setting_names = {
   'stack_factor': 'sf',
@@ -17,7 +36,7 @@ shorthand_setting_names = {
 
 def get_setting(config_dict, idx):
   all_setting_combos = list(product(*config_dict.values()))
-  this_setting = all_setting_combos[idx]
+  this_setting = all_setting_combos[idx - 1]
   this_setting = dict(zip(config_dict.keys(), this_setting))
   return this_setting
 
@@ -31,16 +50,10 @@ if __name__ == "__main__":
                       help="Nr. of cores used for parallelization by the DataLoader. Defaults to os.cpu_count().")
 
   args = parser.parse_args()
+
   
-  variable_settings = {
-    'stack_factor': [2, 4, 8],
-    'hidden_ch': [1, 12, 128],
-    'dropout_rate': [0.2, 0.5],
-    'learning_rate': [1e-5, 5e-5, 1e-6],
-    'att_weight': [200, 2000],
-    'OAL_weight_on': [True, False],
-    'att_weight_decay': [4, 16],
-  }
+  if args.setting_index == 0:
+    save_config(variable_settings, os.path.join(args.job_dir, 'hypertune_settings.json'))
   
   this_setting = get_setting(variable_settings, args.setting_index)
   print("Setting: ", this_setting)
@@ -52,12 +65,12 @@ if __name__ == "__main__":
   os.makedirs(run_dir, exist_ok=True)
 
   dataset_config = {
-      'dataset_dir': '~/scratch/processed/',
-      'n_cores': args.n_cores,
-      'min_samples': 5,
-      'sample_pairing': 'product',
-      'train_set_threshold': 10,
-      'sample_pairing': 'product',
+    'dataset_dir': '~/scratch/processed/',
+    'n_cores': args.n_cores,
+    'min_samples': 5,
+    'sample_pairing': 'product',
+    'train_set_threshold': 10,
+    'sample_pairing': 'product',
   }
   
   sf = this_setting['stack_factor']
@@ -70,7 +83,8 @@ if __name__ == "__main__":
   }
 
   train_config = {
-    'epochs': 30,
+    'epochs': 1,
+    'batch_size': 100,
     'main_loss': 'mse',
     'learning_rate': this_setting['learning_rate'],
     'DAL_weight': this_setting['att_weight'],

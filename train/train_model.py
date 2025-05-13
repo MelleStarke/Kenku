@@ -389,6 +389,8 @@ def train_model(model: KenkuModel,
         # print(f"Train loss: {np.mean(running_loss)}")
         tensorboard_manager.record_train_loss(np.mean(running_loss))
         running_loss = []
+        
+        torch.cuda.empty_cache()
 
 
 ############
