@@ -1,9 +1,29 @@
 import sys, os
 import argparse
+import subprocess
 
 from itertools import product
 
 from data.util import save_config
+  
+# variable_settings = {
+#   'stack_factor': [2, 4, 8],
+#   'hidden_ch': [1, 12, 128],
+#   'dropout_rate': [0.2, 0.5],
+#   'learning_rate': [1e-5, 5e-5, 1e-6],
+#   'att_weight': [200, 2000],
+#   'OAL_weight_on': [True, False],
+#   'att_weight_decay': [4, 16],
+# }
+variable_settings = {
+  'stack_factor': [4],
+  'hidden_ch': [1, 12],
+  'dropout_rate': [0.2, 0.5],
+  'learning_rate': [5e-5],
+  'att_weight': [2000.],
+  'OAL_weight_on': [True],
+  'att_weight_decay': [16],
+}
 
 shorthand_setting_names = {
   'stack_factor': 'sf',
@@ -17,30 +37,24 @@ shorthand_setting_names = {
 
 def get_setting(config_dict, idx):
   all_setting_combos = list(product(*config_dict.values()))
-  this_setting = all_setting_combos[idx]
+  this_setting = all_setting_combos[idx - 1]
   this_setting = dict(zip(config_dict.keys(), this_setting))
   return this_setting
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description='Hyperparameter tuning for the model.')
-  parser.add_argument('job-dir', type=str, metavar='DIR',
+  parser.add_argument('job_dir', type=str, metavar='DIR',
                       help="Directory of the entire hypertuning task")
-  parser.add_argument('setting-index', type=int, metavar='INT',
+  parser.add_argument('setting_index', type=int, metavar='INT',
                       help="Index of the hyperparameter setting to run")
   parser.add_argument('--n-cores', type=int, default=None, metavar='INT',
                       help="Nr. of cores used for parallelization by the DataLoader. Defaults to os.cpu_count().")
 
   args = parser.parse_args()
+
   
-  variable_settings = {
-    'stack_factor': [2, 4, 8],
-    'hidden_ch': [1, 12, 128],
-    'dropout_rate': [0.2, 0.5],
-    'learning_rate': [1e-5, 5e-5, 1e-6],
-    'att_weight': [200, 2000],
-    'OAL_weight_on': [True, False],
-    'att_weight_decay': [4, 16],
-  }
+  if args.setting_index == 0:
+    save_config(variable_settings, os.path.join(args.job_dir, 'hypertune_settings.json'))
   
   this_setting = get_setting(variable_settings, args.setting_index)
   print("Setting: ", this_setting)
@@ -52,29 +66,30 @@ if __name__ == "__main__":
   os.makedirs(run_dir, exist_ok=True)
 
   dataset_config = {
-      'dataset_dir': '~/scratch/processed/',
-      'n_cores': args.n_cores,
-      'min_samples': 5,
-      'sample_pairing': 'product',
-      'train_set_threshold': 10,
-      'sample_pairing': 'product',
+    'dataset_dir': '/home3/s4984218/scratch/processed',
+    'n_cores': args.n_cores,
+    'min_samples': 5,
+    'sample_pairing': 'product',
+    'train_set_threshold': 10,
+    'sample_pairing': 'product',
   }
   
   sf = this_setting['stack_factor']
   model_config = {
-    'conv_ch': this_setting['hidden_ch'] * sf,
-    'att_ch': this_setting['hidden_ch'] * sf,
+    'conv_ch': this_setting['hidden_ch'] * sf * 80,
+    'att_ch': this_setting['hidden_ch'] * sf * 80,
     'embed_ch': 16,
     'stack_factor': sf,
     'dropout_rate': this_setting['dropout_rate'],
   }
 
   train_config = {
-    'epochs': 30,
+    'epochs': 1,
+    'batch_size': 100,
     'main_loss': 'mse',
     'learning_rate': this_setting['learning_rate'],
     'DAL_weight': this_setting['att_weight'],
-    'OAL_weight': this_setting['att_weigtht'] if this_setting['OAL_weight_on'] else 0,
+    'OAL_weight': this_setting['att_weight'] if this_setting['OAL_weight_on'] else 0,
     'att_weight_decay': this_setting['att_weight_decay'],
     'test_interval': 100,
     'melspec_interval': 200,
