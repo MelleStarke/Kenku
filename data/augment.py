@@ -454,11 +454,11 @@ class RandomPowerWarp:
       # Scale the warping function between [0,1]
       warped = (warped - warped.min()) / (warped.max() - warped.min())
       
-      # Store for visualization
-      x = np.linspace(0, 1, 200)
-      y = identity_weight * x + (1 - identity_weight) * composite_fn(x)
-      y = (y - y.min()) / (y.max() - y.min())
-      self.current_warping = (np.linspace(0, 1, 200), y)
+      # # Store for visualization
+      # x = np.linspace(0, 1, 200)
+      # y = identity_weight * x + (1 - identity_weight) * composite_fn(x)
+      # y = (y - y.min()) / (y.max() - y.min())
+      # self.current_warping = (np.linspace(0, 1, 200), y)
       
       return warped
         
