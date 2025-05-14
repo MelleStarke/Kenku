@@ -1,5 +1,6 @@
 import sys, os
 import argparse
+import subprocess
 
 from itertools import product
 
@@ -19,7 +20,7 @@ variable_settings = {
   'hidden_ch': [1, 12],
   'dropout_rate': [0.2, 0.5],
   'learning_rate': [5e-5],
-  'att_weight': [2000],
+  'att_weight': [2000.],
   'OAL_weight_on': [True],
   'att_weight_decay': [16],
 }
@@ -42,9 +43,9 @@ def get_setting(config_dict, idx):
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description='Hyperparameter tuning for the model.')
-  parser.add_argument('job-dir', type=str, metavar='DIR',
+  parser.add_argument('job_dir', type=str, metavar='DIR',
                       help="Directory of the entire hypertuning task")
-  parser.add_argument('setting-index', type=int, metavar='INT',
+  parser.add_argument('setting_index', type=int, metavar='INT',
                       help="Index of the hyperparameter setting to run")
   parser.add_argument('--n-cores', type=int, default=None, metavar='INT',
                       help="Nr. of cores used for parallelization by the DataLoader. Defaults to os.cpu_count().")
@@ -65,7 +66,7 @@ if __name__ == "__main__":
   os.makedirs(run_dir, exist_ok=True)
 
   dataset_config = {
-    'dataset_dir': '~/scratch/processed/',
+    'dataset_dir': '/home3/s4984218/scratch/processed',
     'n_cores': args.n_cores,
     'min_samples': 5,
     'sample_pairing': 'product',
@@ -75,8 +76,8 @@ if __name__ == "__main__":
   
   sf = this_setting['stack_factor']
   model_config = {
-    'conv_ch': this_setting['hidden_ch'] * sf,
-    'att_ch': this_setting['hidden_ch'] * sf,
+    'conv_ch': this_setting['hidden_ch'] * sf * 80,
+    'att_ch': this_setting['hidden_ch'] * sf * 80,
     'embed_ch': 16,
     'stack_factor': sf,
     'dropout_rate': this_setting['dropout_rate'],
@@ -88,7 +89,7 @@ if __name__ == "__main__":
     'main_loss': 'mse',
     'learning_rate': this_setting['learning_rate'],
     'DAL_weight': this_setting['att_weight'],
-    'OAL_weight': this_setting['att_weigtht'] if this_setting['OAL_weight_on'] else 0,
+    'OAL_weight': this_setting['att_weight'] if this_setting['OAL_weight_on'] else 0,
     'att_weight_decay': this_setting['att_weight_decay'],
     'test_interval': 100,
     'melspec_interval': 200,

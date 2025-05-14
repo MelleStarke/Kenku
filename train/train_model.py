@@ -514,6 +514,12 @@ def main():
   print(f"\n===== Configs =====")
   print(f'Time: {datetime.now().strftime("%H:%M:%S")}')
   
+  # If config dir was passed, set all config file paths
+  if args.config_dir:
+    args.dataset_config_path = os.path.join(args.config_dir, 'dataset_config.json')
+    args.model_config_path = os.path.join(args.config_dir, 'model_config.json')
+    args.train_config_path = os.path.join(args.config_dir, 'train_config.json')
+  
   # Merge Command Line and Config File Arguments
   
   # Dataset Config
