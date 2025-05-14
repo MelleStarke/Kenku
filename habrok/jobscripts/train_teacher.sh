@@ -9,7 +9,7 @@
 #SBATCH --gpus-per-node=v100:1
 
 #SBATCH --job-name="train_kenkuteacher"
-#SBATCH --output="/home3/s4984218/Kenku/habrok/jobscripts/results/train_kenkuteacher_%j.out"
+#SBATCH --output="/home3/s4984218/Kenku/habrok/jobscripts/results/train_teacher/%j.out"
 
 module purge
 

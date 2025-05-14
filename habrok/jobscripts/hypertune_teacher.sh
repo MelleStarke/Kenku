@@ -10,7 +10,7 @@
 #SBATCH --array=1-4
 
 #SBATCH --job-name="hypertune_teacher"
-#SBATCH --output="/home3/s4984218/Kenku/habrok/jobscripts/results/hypertune_teacher_%j.out"
+#SBATCH --output="/home3/s4984218/Kenku/habrok/jobscripts/results/hypertune_teacher/%j.out"
 
 module purge
 

@@ -8,7 +8,7 @@
 #SBATCH --partition=regular
 
 #SBATCH --job-name="convert_data"
-#SBATCH --output="/home3/s4984218/Kenku/habrok/jobscripts/results/convert_data_%j.out"
+#SBATCH --output="/home3/s4984218/Kenku/habrok/jobscripts/results/convert_data/%j.out"
 
 module purge
 
