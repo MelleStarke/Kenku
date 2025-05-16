@@ -19,10 +19,10 @@ from torch.utils.data import Dataset, DataLoader
 
 from itertools import product
 
+from concurrent.futures import ThreadPoolExecutor
+
 from data.augment import get_default_augment_fn
 from network import stack_frames
-
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 
 ###############
@@ -138,8 +138,15 @@ def augmented_collate_fn(batch):
   #=== Augmentation ===#
   augment_fn = get_default_augment_fn()
   
-  batch = [(*augment_fn(src_mel, tgt_mel), src_info, tgt_info)
-           for src_mel, tgt_mel, src_info, tgt_info in batch]
+  # Use ThreadPoolExecutor to parallelize the augmentation
+  with ThreadPoolExecutor() as executor:
+    def process_item(item):
+      src_mel, tgt_mel, src_info, tgt_info = item
+      aug_src_mel, aug_tgt_mel = augment_fn(src_mel, tgt_mel)
+      return aug_src_mel, aug_tgt_mel, src_info, tgt_info
+    
+    # Process all items in parallel
+    batch = list(executor.map(process_item, batch))
 
   return collate_fn(batch)
     

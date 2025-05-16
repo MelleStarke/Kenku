@@ -6,24 +6,24 @@ from itertools import product
 
 from data.util import save_config
   
-# variable_settings = {
-#   'stack_factor': [2, 4, 8],
-#   'hidden_ch': [1, 12, 128],
-#   'dropout_rate': [0.2, 0.5],
-#   'learning_rate': [1e-5, 5e-5, 1e-6],
-#   'att_weight': [200, 2000],
-#   'OAL_weight_on': [True, False],
-#   'att_weight_decay': [4, 16],
-# }
 variable_settings = {
-  'stack_factor': [4],
-  'hidden_ch': [1, 12],
-  'dropout_rate': [0.2, 0.5],
-  'learning_rate': [5e-5],
-  'att_weight': [2000.],
+  'stack_factor': [2, 4, 8],
+  'hidden_ch': [64, 128],
+  'dropout_rate': [0.2, 0.4],
+  'learning_rate': [1e-5, 5e-5, 1e-6],
+  'att_weight': [200, 2000],
   'OAL_weight_on': [True],
-  'att_weight_decay': [16],
+  'att_weight_decay': [4, 16],
 }
+# variable_settings = {
+#   'stack_factor': [4],
+#   'hidden_ch': [1, 12],
+#   'dropout_rate': [0.2, 0.5],
+#   'learning_rate': [5e-5],
+#   'att_weight': [2000.],
+#   'OAL_weight_on': [True],
+#   'att_weight_decay': [16],
+# }
 
 shorthand_setting_names = {
   'stack_factor': 'sf',
@@ -69,30 +69,28 @@ if __name__ == "__main__":
     'dataset_dir': '/home3/s4984218/scratch/processed',
     'n_cores': args.n_cores,
     'min_samples': 5,
-    'sample_pairing': 'product',
     'train_set_threshold': 10,
-    'sample_pairing': 'product',
   }
   
   sf = this_setting['stack_factor']
   model_config = {
-    'conv_ch': this_setting['hidden_ch'] * sf * 80,
-    'att_ch': this_setting['hidden_ch'] * sf * 80,
+    'conv_ch': this_setting['hidden_ch'] * sf,
+    'att_ch': this_setting['hidden_ch'] * sf,
     'embed_ch': 16,
     'stack_factor': sf,
     'dropout_rate': this_setting['dropout_rate'],
   }
 
   train_config = {
-    'epochs': 1,
-    'batch_size': 100,
+    'epochs': 50,
+    'batch_size': 700,
     'main_loss': 'mse',
     'learning_rate': this_setting['learning_rate'],
     'DAL_weight': this_setting['att_weight'],
     'OAL_weight': this_setting['att_weight'] if this_setting['OAL_weight_on'] else 0,
     'att_weight_decay': this_setting['att_weight_decay'],
     'test_interval': 100,
-    'melspec_interval': 200,
+    'melspec_interval': 100,
     'checkpoint_interval': 200,
     'checkpoint_max': 2,
     'run_dir': run_dir,

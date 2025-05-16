@@ -76,14 +76,14 @@ def recursive_to_device(xs: Union[Tensor, List, Tuple], device: DeviceObjType):
       _type_: _description_
   """
   if is_tensor(xs):
-    return xs.to(device=device)
+    return xs.to(device=device, non_blocking=True)
   
   try:
     xs[0]
     xs_type = type(xs)
     return xs_type([recursive_to_device(x, device) for x in xs])
   
-  except IndexError as e:
+  except (IndexError, TypeError) as e:
     raise IndexError(f"Type {type(x)} isn't indexable.") from e
   
 def recursive_map(xs: Any, fn: Callable, cond = is_tensor):
@@ -95,6 +95,6 @@ def recursive_map(xs: Any, fn: Callable, cond = is_tensor):
     xs_type = type(xs)
     return xs_type([recursive_map(x, fn, cond) for x in xs])
   
-  except IndexError as e:
+  except (IndexError, TypeError) as e:
     err_msg = f"{e}\nType {type(xs)} isn't indexable"
     raise IndexError(err_msg)

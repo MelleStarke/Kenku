@@ -59,6 +59,16 @@ logfile_handler.setFormatter(log_formatter)
 ### Utility ###
 ###############
 
+def print_memory_usage(meta_info: str):
+  return
+  """Print detailed memory usage of GPU"""
+  print(f"\nMemory usage logging: {meta_info}")
+  print("Allocated memory:", torch.cuda.memory_allocated() / 1e9, "GB")
+  print("Max allocated memory:", torch.cuda.max_memory_allocated() / 1e9, "GB")
+  print("Cached memory:", torch.cuda.memory_reserved() / 1e9, "GB")
+  print("Max cached memory:", torch.cuda.max_memory_reserved() / 1e9, "GB")
+
+
 class DummyManager:
   def __init__(self, *args, **kwargs):
     pass
@@ -103,7 +113,7 @@ class CheckpointManager:
           heappush(self.filenames_heap, (-self.latest_test_loss, filename))
           
           # Remove checkpoint with the highest test loss if the maximum amount is exceeded
-          if len(self.filenames_heap) > self.max_checkpoints:
+          while len(self.filenames_heap) > self.max_checkpoints:
             self.delete_worst_checkpoint()
           
       # Update latest checkpoint if it isn't already in the heap
@@ -189,10 +199,10 @@ class TensorboardManager:
     # Melspecs are truncated at this index to reduce image size while keeping actual data.
     last_masked_frame = masked_frame_idxs.max().to(torch.int).detach().cpu().item() + 1
     
-    src_mel  = src_mel[:n_images, :, :last_masked_frame].to(device)
-    tgt_mel  = tgt_mel[:n_images, :, :last_masked_frame].to(device)
-    src_info = tuple(k[:n_images].to(device) for k in src_info)
-    tgt_info = tuple(k[:n_images].to(device) for k in tgt_info)
+    src_mel  = src_mel[:n_images, :, :last_masked_frame]
+    tgt_mel  = tgt_mel[:n_images, :, :last_masked_frame]
+    src_info = tuple(k[:n_images] for k in src_info)
+    tgt_info = tuple(k[:n_images] for k in tgt_info)
     
     return src_mel, tgt_mel, src_info, tgt_info
   
@@ -207,17 +217,18 @@ class TensorboardManager:
     if numerator % self.interval == 0:
       # torch.cuda.empty_cache()
       # gc.collect()
-      
-      self.model.eval()
-      
-      self.model.clear_paddings()
-      self.record_test_loss()
-      
-      self.model.clear_paddings()
-      self.record_test_melspecs()
-      
-      # torch.cuda.empty_cache()
-      # gc.collect()
+      with torch.no_grad():
+        self.model.eval()
+        
+        self.model.clear_paddings()
+        torch.cuda.empty_cache()
+        self.record_test_loss()
+        torch.cuda.synchronize()  # Ensure all CUDA operations are complete
+        
+        self.model.clear_paddings()
+        self.record_test_melspecs()
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()  # Ensure all CUDA operations are complete
       
       self.model.train()
       
@@ -243,10 +254,14 @@ class TensorboardManager:
     for bi, batch in enumerate(self.test_loader):
       if bi == n_test_batches:
         break
-      
+      # print(f"\nTest batch shape: {batch[0].shape}")
+      print_memory_usage(f"TEST Batch {bi}: BEFORE sending to GPU")
       batch = recursive_to_device(batch, device)
+      print_memory_usage(f"TEST Batch {bi}: AFTER sending to GPU")
       
+      print_memory_usage(f"TEST Batch {bi}: BEFORE loss calc")
       loss_comps, _ = self.model.calc_loss(*batch, as_components=True)
+      print_memory_usage(f"TEST Batch {bi}: AFTER loss calc")
       
       # Add to cumulative losses
       if test_losses is None:
@@ -266,14 +281,18 @@ class TensorboardManager:
   def record_test_melspecs(self):
     is_student = isinstance(self.model, KenkuStudent)
     
+    img_batch = recursive_to_device(self.img_batch, device)
+    
     if is_student:
-      src_mel, _, src_info, tgt_info = self.img_batch
+      src_mel, _, src_info, tgt_info =  img_batch
       model_input = src_mel, src_info, tgt_info
     else:
-      model_input = self.img_batch
-    
+      model_input = img_batch
+      
+    # TODO: Add position encoding
+      
     pred_mel, attention = self.model(*model_input, stack=True)
-    src_mel, tgt_mel, _, _ = self.img_batch
+    src_mel, tgt_mel, _, _ = img_batch
     
     # Send to checkpoint manager to get access to the actual numbers
     self.checkpoint_manager.test_melspecs = [src_mel, tgt_mel, pred_mel]
@@ -369,14 +388,33 @@ def train_model(model: KenkuModel,
 
     running_loss = []
 
-    for batch_index, batch in tqdm(enumerate(train_loader), total=len(train_loader), mininterval=20.):
+    for batch_index, batch in tqdm(enumerate(train_loader), total=len(train_loader), mininterval=60., disable=False):
+      print_memory_usage(f"Batch {batch_index}: BEFORE sending to GPU")
       batch = recursive_to_device(batch, device)
+      print_memory_usage(f"Batch {batch_index}: AFTER sending to GPU")
       
       tensorboard_manager.inform(epoch, batch_index)
       checkpoint_manager.inform(epoch, batch_index)
 
       model.clear_paddings()
-      loss, A = model.calc_loss(*batch, main_loss_fn=main_loss_fn, loss_weights=loss_weights)
+      print_memory_usage(f"Batch {batch_index}: BEFORE loss calc")
+      
+      try:
+        loss, A = model.calc_loss(*batch, main_loss_fn=main_loss_fn, loss_weights=loss_weights)
+      except torch.cuda.OutOfMemoryError() as e:
+        err_msg = f"[ERROR] CUDA out of memory for training batch with shape {batch[0].shape}.\n" \
+                   "Clearing CUDA cache and continuing to next iteration"
+        print(err_msg)
+        logger.error(err_msg)
+        
+        model.zero_grad()
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        gc.collect()
+        continue
+        
+        
+      print_memory_usage(f"Batch {batch_index}: AFTER loss calc")
 
       model.zero_grad()
       loss.backward()
@@ -390,7 +428,7 @@ def train_model(model: KenkuModel,
         tensorboard_manager.record_train_loss(np.mean(running_loss))
         running_loss = []
         
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
 
 
 ############
@@ -548,6 +586,10 @@ def main():
   print(f"\n===== Data =====")
   print(f'Time: {datetime.now().strftime("%H:%M:%S")}')
   
+  
+  # if hasattr(torch.cuda, 'memory_stats'):
+  #   torch.cuda.set_allocator_settings('max_split_size_mb:128')
+  
   dataset_factory = ParallelDatasetFactory(dataset_dir = dataset_config['dataset_dir'])
   
   train_set, test_set = dataset_factory.train_test_split(min_transcript_samples = dataset_config['min_samples'],
@@ -557,16 +599,30 @@ def main():
   if dataset_config['preload_melspecs']:
     train_set.preload_melspecs()
     test_set.preload_melspecs()
+    
+  # Passed as worker_init_fn kwarg in DataLoader.
+  def limit_worker_resources(worker_id):
+    # Set process specific memory limits.
+    torch.set_num_threads(1)
 
   data_loader_kwargs = {
-    'batch_size'  : train_config['batch_size'],
     'shuffle'     : True,
-    'num_workers' : dataset_config['n_cores'],
     'drop_last'   : True,
-    'pin_memory'  : True
+    'pin_memory'  : True,
+    'persistent_workers': True
   }
-  train_loader = DataLoader(train_set, collate_fn=augmented_collate_fn, **data_loader_kwargs)
-  test_loader  = DataLoader(test_set,  collate_fn=collate_fn, **data_loader_kwargs)
+  train_loader = DataLoader(train_set, 
+                            batch_size      = train_config['batch_size'],
+                            collate_fn      = augmented_collate_fn, 
+                            num_workers     = dataset_config['n_cores'],
+                            prefetch_factor = 1,
+                            **data_loader_kwargs)
+  
+  test_loader  = DataLoader(test_set,  
+                            batch_size  = min(100, train_config['batch_size']),
+                            collate_fn  = collate_fn, 
+                            num_workers = 1,
+                            **data_loader_kwargs)
   
   print((f"Num train samples: {len(train_set)}\n" 
          f"Num test samples : {len(test_set)}\n\n" 
@@ -611,8 +667,9 @@ def main():
   #=== Initialize Optimizer ===#
   
   optimizer = torch.optim.Adam(model.parameters(),
-                               lr    = train_config['learning_rate'],
-                               betas = train_config['adam_betas'])
+                               lr           = train_config['learning_rate'],
+                               betas        = train_config['adam_betas'],
+                               weight_decay = 0.01)
   
   
   #=== Load Checkpoint ===#

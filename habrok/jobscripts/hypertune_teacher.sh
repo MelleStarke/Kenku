@@ -2,12 +2,12 @@
 #================
 
 #SBATCH --partition gpu
-#SBATCH --cpus-per-task 12
-#SBATCH --mem 12G
-#SBATCH --time 0-0:10:00
+#SBATCH --cpus-per-task 15
+#SBATCH --mem-per-cpu 2G
+#SBATCH --time 0-9:00:00
 #SBATCH --nodes 1
 #SBATCH --gpus-per-node=1
-#SBATCH --array=1-4
+#SBATCH --array=1-144
 
 #SBATCH --job-name="hypertune_teacher"
 #SBATCH --output="/home3/s4984218/Kenku/habrok/jobscripts/results/hypertune_teacher/%j.out"

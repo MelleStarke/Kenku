@@ -356,7 +356,14 @@ class KenkuTeacher(KenkuModel):
     
     # Return as components if requested
     if as_components:
-      return {'main loss': main_loss, 'da loss': da_loss, 'oa loss': oa_loss}, A
+      # main_loss_lshift = main_loss_fn(pred_mel[...,:-1], tgt_mel[...,1:], tgt_mask[...,1:])
+      # main_loss_rshift = main_loss_fn(pred_mel[...,1:], tgt_mel[...,:-1], tgt_mask[...,:-1])
+      return {'main loss': main_loss, 
+              'da loss': da_loss, 
+              'oa loss': oa_loss, 
+              # 'main loss lshift': main_loss_lshift, 
+              # 'main loss rshift': main_loss_rshift
+              }, A
     
     # Combine loss terms
     if loss_weights is None:
@@ -367,8 +374,8 @@ class KenkuTeacher(KenkuModel):
     for lw, loss_term in zip(loss_weights, [da_loss, oa_loss]):
       total_loss += lw * loss_term
       
-    # Add regularization
-    total_loss += L2_regularization(self.parameters())
+    # # Add regularization
+    # total_loss += L2_regularization(self.parameters())
       
     return total_loss, A
     

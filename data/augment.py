@@ -118,7 +118,7 @@ def compose_random_sines(max_period: int,
                          min_amp:  float = 0.5,
                          max_amp:  float = 2.,
                          min_mag:  float = 0.1,
-                         max_mag:  float = 0.9):
+                         max_mag:  float = 0.9,):
   n_sines = rng.integers(min_sines, max_sines + 1)
   frequency = rng.uniform(min_freq, max_freq, n_sines) / max_period * 2 * np.pi
   amplitude = rng.uniform(min_amp, max_amp, n_sines)
@@ -152,7 +152,7 @@ def get_default_augment_fn():
   
   def fn_composition(src_mel: Tensor, tgt_mel: Tensor):
     src_mel, tgt_mel = clip(src_mel, tgt_mel)
-    src_mel, tgt_mel = power_warp(src_mel, tgt_mel)
+    # src_mel, tgt_mel = power_warp(src_mel, tgt_mel)
     src_mel = time_warp(src_mel)
     tgt_mel = time_warp(tgt_mel)
     
@@ -169,10 +169,13 @@ class MelspecTransform(ABC):
   
 
 class AlignedRandomClip(MelspecTransform):
-  def __init__(self, max_clip_ratio: float = 0.7):
+  def __init__(self, 
+               max_clip_ratio:    float = 0.7,
+               max_output_frames: int   = 500):
     assert 0.0 < max_clip_ratio < 1.0, f"max_clip_ratio must be within (0.0, 1.0). Got: max_clip_ratio = {max_clip_ratio}"
     
-    self.max_clip_ratio   = max_clip_ratio
+    self.max_clip_ratio    = max_clip_ratio
+    self.max_output_frames = max_output_frames 
     
   def __call__(self, src_mel: Tensor, tgt_mel: Tensor):
     n_src_frames = src_mel.shape[-1]
@@ -186,13 +189,16 @@ class AlignedRandomClip(MelspecTransform):
     src_indices = path[:,0]
     tgt_indices = path[:,1]
     
-    # Determine path length and absolute max clip value
+    # Determine path length
     path_length = len(path)
+    # Set min_clip such that the frames of the clipped spectrograms doesn't exceed self.max_output_frames
+    # This sets an upper limit to the nr. of frames of a spectrogram, thereby making memory usage more consistent between batches.
+    min_clip = max(1, path_length - self.max_output_frames)
     max_clip = int(self.max_clip_ratio * path_length)
     
     # Randomly (uniform) determine how many steps in the path
     # should be clipped from either side.
-    n_clipped_steps = rng.integers(1, max_clip)
+    n_clipped_steps = rng.integers(min_clip, max_clip)
     start_idx = rng.integers(n_clipped_steps)
     end_idx = path_length - n_clipped_steps + start_idx
     
@@ -303,7 +309,7 @@ class RandomStretchedTimeWarp(MelspecTransform):
                max_mag:     float = 0.9,
                min_stretch: float = 0.7,
                max_stretch: float = 1.3,
-               max_frames: int = 2000,
+               max_frames: int = 500,
   ):
     self.min_sines = min_sines
     self.max_sines = max_sines
