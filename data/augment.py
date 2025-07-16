@@ -198,7 +198,11 @@ class AlignedRandomClip(MelspecTransform):
     
     # Randomly (uniform) determine how many steps in the path
     # should be clipped from either side.
-    n_clipped_steps = rng.integers(min_clip, max_clip)
+    try:
+      n_clipped_steps = rng.integers(min_clip, max_clip)
+    except ValueError as e:
+      raise ValueError(f"min_clip: {min_clip}, max_clip: {max_clip}, path_length: {path_length}") from e
+    
     start_idx = rng.integers(n_clipped_steps)
     end_idx = path_length - n_clipped_steps + start_idx
     
