@@ -5,7 +5,7 @@ import subprocess
 from itertools import product
 
 from data.util import save_config
-  
+
 variable_settings = {
   'stack_factor': [2, 4, 8],
   'hidden_ch': [64, 128],
@@ -13,7 +13,7 @@ variable_settings = {
   'learning_rate': [1e-5, 5e-5, 1e-6],
   'att_weight': [200, 2000],
   'OAL_weight_on': [True],
-  'att_weight_decay': [4, 16],
+  'att_weight_decay': [0.0667, 0.0167],
 }
 # variable_settings = {
 #   'stack_factor': [4],
@@ -53,7 +53,7 @@ if __name__ == "__main__":
   args = parser.parse_args()
 
   
-  if args.setting_index == 0:
+  if args.setting_index == 1:
     save_config(variable_settings, os.path.join(args.job_dir, 'hypertune_settings.json'))
   
   this_setting = get_setting(variable_settings, args.setting_index)
@@ -82,16 +82,16 @@ if __name__ == "__main__":
   }
 
   train_config = {
-    'epochs': 50,
-    'batch_size': 700,
+    'epochs': 60,
+    'batch_size': 500,
     'main_loss': 'mse',
     'learning_rate': this_setting['learning_rate'],
     'DAL_weight': this_setting['att_weight'],
     'OAL_weight': this_setting['att_weight'] if this_setting['OAL_weight_on'] else 0,
     'att_weight_decay': this_setting['att_weight_decay'],
-    'test_interval': 100,
-    'melspec_interval': 100,
-    'checkpoint_interval': 200,
+    'test_interval': 85,
+    'melspec_interval': 85,
+    'checkpoint_interval': 170,
     'checkpoint_max': 2,
     'run_dir': run_dir,
   }
