@@ -1,0 +1,20 @@
+Best SF4:
+	- HC=64
+	- LR=1e-6
+	- AW=200
+	Performs notably worse with AW=2000
+
+
+Best SF2:
+	- HC=64 LR=1e-5 AW=2000 (lowest test loss at 0.2082, 0.2270, 0.2182, 0.2211, though a bit jittery)
+	- HC=128 LR=1e-6 AW=200
+
+Notably bad SF2:
+	- 64, 1e-6, 2000
+	- 64, 1e-6, 200 (sudden dip at the end, maybe has potential?)
+
+
+Takeaways:
+	- Lower stack factor improves test loss across the board
+	- Little difference between dropout 0.2 and 0.4
+	- Best settings: 64, 1e-5, 2000 (lowest but with slight jitter); 128, 1e-6, 200 (smoother curve but higher loss at 0.254, 0.257, 0.2847, 0.2707)
