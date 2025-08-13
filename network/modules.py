@@ -54,7 +54,7 @@ class KameEmbedding(nn.Module):
     super(KameEmbedding, self).__init__()
     
     self.n_accents = n_accents
-    self.layer = nn.Linear(n_accents + 2, n_channels).to(device)
+    self.layer = weight_norm(nn.Linear(n_accents + 2, n_channels)).to(device)
     
   def forward(self, ages, genders, accents):
     batch_size = len(ages)
@@ -260,7 +260,7 @@ class ConvGLU(nn.Module):
     if padding is None:
       # Make tensor of zeros of shape (batch_size, channels) and append empty dim at the end.
       padding = torch.zeros_like(X_emb[:,:,0]).unsqueeze(-1)
-      padding = padding.repeat(1, 1, self.padding_len)  # Repeat zeros over empty dim for padding.
+      padding = padding.expand(-1, -1, self.padding_len)  # Repeat zeros over empty dim for padding. TODO: expand may be more efficient, but repeat may be more reliable
       
     
     # Append along time dimension, prior to input X.
@@ -272,7 +272,10 @@ class ConvGLU(nn.Module):
       
     X_scale, X_gate = torch.chunk(X_, chunks=2, dim=1)  # Split into 2 streams for GLU
     Y = X_scale * torch.sigmoid(X_gate)  # GLU
-    Y += X  # Skip-connection
+    
+    if Y.shape == X.shape:
+      Y += X  # Skip-connection
+      
     return Y, padding
   
 
@@ -360,14 +363,114 @@ class AttentionPredictor(nn.Module):
     return norm_gauss_att, means, stds
     
     
+class MaskedGlobalPool(nn.Module):
+  def __init__(self, pooling_type: Optional[str] = 'mean'):
+    super(MaskedGlobalPool, self).__init__()
+    
+    assert pooling_type in ['avg', 'max'], f"Pooling type {pooling_type} not supported. Use 'avg' or 'max'."
+    self.pooling_type = pooling_type
+    
+  def forward(self, X: Tensor, mask: Tensor):
+    mask = mask.unsqueeze(1)
+    if mask.shape[-1] != X.shape[-1]:
+      print(f"Mask shape {mask.shape} does not match input shape {X.shape}. Reshaping mask to match input.")
+      batch_size, _, n_frames = X.shape
+      mask = torch.ones((batch_size, 1, n_frames), device=X.device, dtype=X.dtype)
+    
+    if self.pooling_type.lower() == "avg":
+      masked_sum = (X * mask).sum(dim=-1)  # (batch_size, channels)
+      valid_lengths = mask.sum(dim=-1)    # (batch_size, 1)
+      avg_pooled_frame = masked_sum / (valid_lengths + 1e-8)
+      return avg_pooled_frame[:,:,None]  # Add empty frame dim
+        
+    elif self.pooling_type.lower() == "max":
+      masked_x = X.masked_fill(~mask.bool(), -torch.inf)  # Replace masked values with -inf for max pooling
+      return torch.max(masked_x, dim=-1)[0]
+      
+      
+class SpeakerInfoEncoder(nn.Module):
+  def __init__(self,
+               in_ch: int,
+               conv_ch: int,
+               out_ch: int,
+               num_conv_layers: Optional[int] = 6,
+               kernel_size: Optional[int] = 5,
+               dilations: Optional[List[int]] = None,
+               dropout_rate: Optional[float] = 0.2,
+               pooling_type: Optional[str] = 'avg',
+  ):
+    super(SpeakerInfoEncoder, self).__init__()
+    
+    if dilations is None:
+      # Shorter dilation sequence since we'll pool at the end
+      dilations = [3**(i%3) for i in range(num_conv_layers)]  # 1,3,9,1,3,9...
+    
+    else:
+      assert len(dilations) == num_conv_layers,\
+        f"The manually provided list of dilations has a different length ({len(dilations)}) than the nr. of layers ({num_conv_layers})."
+    
+    #=== Layers ===#
+    self.dropout     = nn.Dropout(p=dropout_rate)
+    
+    # Use 1D Conv layer as linear layer to match up shapes better.
+    self.in_layer = weight_norm(nn.Conv1d(in_channels  = in_ch,
+                                          out_channels = conv_ch,
+                                          kernel_size  = 1, 
+                                          padding      = 0,
+                                          device       = device))
+    
+    self.conv_blocks = nn.ModuleList()
+    for dil in dilations:
+      self.conv_blocks.append(ConvGLU(in_ch       = conv_ch, 
+                                      out_ch      = conv_ch, 
+                                      kernel_size = kernel_size, 
+                                      dilation    = dil))
+      
+    self.global_pool = MaskedGlobalPool(pooling_type=pooling_type)
+    
+    self.out_layer = weight_norm(nn.Conv1d(in_channels  = conv_ch,
+                                           out_channels = out_ch,
+                                           kernel_size  = 1,
+                                           padding      = 0,
+                                           device       = device))
+        
+  def forward(self, X: Tensor, mask: Tensor):
+    device = X.device
+    dtype = X.dtype
+    
+    batch_size, in_ch, n_frames = X.shape
+    
+    empty_embedding = torch.empty((batch_size, 0, n_frames), device=device, dtype=dtype)
+    empty_padding   = torch.empty((batch_size, in_ch, 0), device=device, dtype=dtype)
+    
+    #=== Forward Pass ===#
+    X_ = self.dropout(X)
+    X_ = self.in_layer(X_)
+    
+    # Pass through Conv GLU blocks.
+    for layer in self.conv_blocks:
+      conv_ch = self.conv_blocks[0].conv.in_channels
+      conv_frames = X_.shape[-1]
+      empty_embedding = torch.empty((batch_size, 0, conv_frames), device=device, dtype=dtype)
+      empty_padding   = torch.empty((batch_size, conv_ch, 0), device=device, dtype=dtype)
+      X_, _ = layer(X_, empty_embedding, padding=empty_padding)
+      
+    
+    X_pool = self.global_pool(X_, mask)
+    
+    empty_embedding = torch.empty((batch_size, 0, 0), device=device, dtype=dtype)
+    empty_padding  = torch.empty((batch_size, X_pool.shape[-1], 0), device=device, dtype=dtype)
+    Y = self.out_layer(X_pool)
+    return Y
 
 if __name__ == "__main__":
   import matplotlib.pyplot as plt
   
   mode = [
     'embed',
-    'att pred'
-  ][1]
+    'att pred',
+    'encode embed'
+  ][2]
   
   batch_size  = 4
   in_ch       = 5
@@ -466,6 +569,38 @@ if __name__ == "__main__":
       att.zero_grad()
       loss.backward()
       optimizer.step()
+      
+  if mode == 'encode embed':
+    # Example parameters
+    batch_size = 4
+    n_mels = 80
+    max_frames = 200
+    embedding_dim = 16
+    
+    # Create model
+    model = SpeakerInfoEncoder(
+      in_ch=n_mels,
+      conv_ch=128,
+      out_ch=embedding_dim,
+      num_conv_layers=6,
+      kernel_size=5,
+      pooling_type="avg"
+    )
+    
+    # Create dummy data with different lengths
+    x = torch.randn(batch_size, n_mels, max_frames, dtype=torch.float32, device=device)
+    
+    # Create mask (simulate different sequence lengths)
+    lengths = [150, 180, 120, 200]  # Different lengths per batch item
+    mask = torch.zeros(batch_size, max_frames, dtype=torch.bool, device=device)
+    for i, length in enumerate(lengths):
+        mask[i, :length] = True
+    
+    # Forward pass
+    embeddings = model(x, mask)
+    print(f"Input shape: {x.shape}")
+    print(f"Output shape: {embeddings.shape}")
+    print(f"Embedding dimension: {embedding_dim}")
   # kb = KameBlock(in_ch, conv_ch, out_ch, embed_ch, num_accents)
   # X = torch.rand(batch_size, in_ch, timesteps, device=device)
   # Y = kb(X, [0] * 16)
