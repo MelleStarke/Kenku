@@ -2,14 +2,14 @@
 #================
 
 #SBATCH --partition gpu
-#SBATCH --cpus-per-task 15
+#SBATCH --cpus-per-task 25
 #SBATCH --mem-per-cpu 2G
-#SBATCH --time 0-0:30:00
+#SBATCH --time 1-12:00:00
 #SBATCH --nodes 1
 #SBATCH --gpus-per-node=a100:1
 
-#SBATCH --job-name="train_teacher_max_size_test"
-#SBATCH --output="/home3/s4984218/Kenku/habrok/jobscripts/results/train_teacher/max_size_test_%j.out"
+#SBATCH --job-name="train_teacher_tuned"
+#SBATCH --output="/home3/s4984218/Kenku/habrok/jobscripts/results/train_teacher/tuned/%j.out"
 
 module purge
 
@@ -25,7 +25,8 @@ date +"%H:%M:%S"
 # export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:64,garbage_collection_threshold:0.6
 
 cd ~/Kenku
-srun --export=ALL python -m train.train_model --test-interval 50 --melspec-interval 50 --checkpoint-interval 100 --checkpoint-max 3 --dataset-dir ~/scratch/processed --n-cores $SLURM_CPUS_PER_TASK --min-samples 7 --stack-factor 8 --conv-ch 1024 --att-ch 1024 -dor 0.2 --epochs 50 --main-loss mse --batch-size 500 --max-test-batches 200 --run-dir ~/scratch/runs/teacher/max_size_test_$SLURM_JOB_ID
+# srun --export=ALL python -m train.train_model -lr 1e-6 -wda 2000 -woa 2000 --test-interval 50 --melspec-interval 50 --checkpoint-interval 100 --checkpoint-max 5 --dataset-dir ~/scratch/processed --n-cores $SLURM_CPUS_PER_TASK --min-samples 7 --stack-factor 1 --conv-ch 512 --att-ch 256 -dor 0.2 --epochs 200 --main-loss mse --batch-size 200 --max-test-batches 200 --run-dir ~/scratch/runs/teacher/tuned/$SLURM_JOB_ID
+srun --export=ALL python -m train.train_model --config-dir home3/s4984218/scratch/runs/teacher/tuned/18581929/checkpoints
 
 echo "Finished training"
 
