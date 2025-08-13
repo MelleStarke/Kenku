@@ -10,9 +10,9 @@ from torch.nn.utils.parametrizations import weight_norm
 from typing import List, Tuple, Union, Optional
 from pathlib import Path
 
-from network.modules import KameBlock, ScaledDotProductAttention, AttentionPredictor
+from network.modules import KameBlock, ScaledDotProductAttention, AttentionPredictor, SpeakerInfoEncoder
 
-from train.loss import mse_loss, mae_loss, auxil_att_loss, diag_att_loss, ortho_att_loss, L2_regularization
+from train.loss import mse_loss, mae_loss, auxil_att_loss, diag_att_loss, ortho_att_loss, beta_tcvae_loss
 
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -374,9 +374,6 @@ class KenkuTeacher(KenkuModel):
     for lw, loss_term in zip(loss_weights, [da_loss, oa_loss]):
       total_loss += lw * loss_term
       
-    # # Add regularization
-    # total_loss += L2_regularization(self.parameters())
-      
     return total_loss, A
     
 
@@ -531,6 +528,35 @@ class KenkuStudent(KenkuModel):
     self.attention_predictor.encoder.clear_paddings()
 
 
+class DRLKenkuTeacher(KenkuTeacher):
+  def __init__(self,
+               in_ch: int,
+               conv_ch: int,
+               att_ch: int,
+               out_ch: int,
+               embed_ch: int,
+               num_accents: int,
+               num_conv_layers: Optional[int] = 8,
+               kernel_size: Optional[int] = 5,
+               dilations: Optional[List[int]] = None,
+               dropout_rate: Optional[float] = 0.2,
+               stack_factor: int = 4):
+    super(DRLKenkuTeacher, self).__init__(
+      in_ch, conv_ch, att_ch, out_ch, embed_ch, num_accents,              
+      num_conv_layers = num_conv_layers,
+      kernel_size     = kernel_size,
+      dilations       = dilations,
+      dropout_rate    = dropout_rate,
+      stack_factor    = stack_factor
+    )
+    
+    self.speaker_info_encoder = SpeakerInfoEncoder(
+      in_ch * sf, conv_ch, embed_ch,
+      num_conv_layers = num_conv_layers,
+      kernel_size     = kernel_size,
+      dilations       = dilations,
+      dropout_rate    = dropout_rate
+    )
 
 if __name__ == "__main__":
   from torch.utils.data import DataLoader

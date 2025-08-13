@@ -34,9 +34,9 @@ log_formatter = logging.Formatter(fmt     = '%(asctime)s (%(module)s:%(lineno)d)
 logfile_handler.setFormatter(log_formatter)
 
 
-######################
-### Loss Functions ###
-######################
+###########################
+### Reconstruction Loss ###
+###########################
 
 def mse_loss(pred_mel: Tensor, 
              tgt_mel:  Tensor,
@@ -64,6 +64,10 @@ def mae_loss(pred_mel: Tensor,
   masked_mae_loss = torch.sum(masked_mel_dim_loss) / torch.sum(tgt_mask)
   
   return masked_mae_loss
+
+######################
+### Attention Loss ###
+######################
 
 def auxil_att_loss(pred_means: Tensor, pred_stds: Tensor, true_A: Tensor):
   # TODO: Add masking
@@ -95,7 +99,6 @@ def auxil_att_loss(pred_means: Tensor, pred_stds: Tensor, true_A: Tensor):
   
   return (mean_loss + std_loss).mean()
   
-
 def masked_gauss_dist_matrix(n_rows, n_cols, n_rows_on, n_cols_on, sigma):
   """
   Create a distance matrix using the RBF kernel.
@@ -172,25 +175,111 @@ def ortho_att_loss(A: Tensor, src_mask: Tensor, tgt_sigma = 0.3):
   
   return ortho_att_loss
 
-def L2_regularization(parameters: Iterator[Parameter], weight=0.01):
+######################################
+### Disentanglement Loss (β-TCVAE) ###
+######################################
+
+# (Code from https://github.com/clementchadebec/benchmark_VAE/blob/main/src/pythae/models/beta_tc_vae/beta_tc_vae_model.py)
+
+def log_importance_weight_matrix(batch_size, dataset_size, device='cpu'):
   """
-  L2 regularization for all parameters in the model.
+  Compute importance weigth matrix for Minibatch Stratified Sampling (MSS)
+  Code fixed from (https://github.com/rtqichen/beta-tcvae/blob/master/vae_quant.py)
+  """
+  N = dataset_size
+  M = batch_size - 1
+  
+  # Start with off-diagonal weights everywhere
+  W = torch.full((batch_size, batch_size), 1 / M, device=device)
+  
+  # Set diagonal elements using advanced indexing
+  diag_idxs = torch.arange(batch_size, device=device)
+  W[diag_idxs, diag_idxs] = 1 / N
+  
+  # Set stratified weights at 1 x-pos off diagonal
+  strat_col_idxs = (diag_idxs + 1) % batch_size
+  W[diag_idxs, strat_col_idxs] = (N - M) / (N * M)
+  
+  return W.log()
+
+def beta_tcvae_loss(z, mu, log_var, dataset_size, alpha=1., beta=1., gamma=1., use_mss=True):
+  """
+  Compute the β-TCVAE loss as described in the paper "vsolating Sources of Disentanglement in VAEs" by Chen et al. (2018)
+  
+  Decomposes the ELBO into three terms:
+  - Mutual Information (MI)
+  - Total Correlation (TC)
+  - Dimwise KL Divergence
+  And weighs them with the parameters alpha, beta, and gamma respectively.
   
   Args:
-      model: The model to apply L2 regularization to.
-      lambda_l2: The L2 regularization coefficient.
+    z: Tensor of shape (batch_size, latent_dim) representing the latent variables
+    mu: Tensor of shape (batch_size, latent_dim) representing the predicted mean of the latent variables
+    log_var: Tensor of shape (batch_size, latent_dim) representing the predicted log variance of the latent variables
+    dataset_size: Size of the dataset used for training
+    
+    alpha: Weight for the Mutual Information term
+    beta: Weight for the Total Correlation term
+    gamma: Weight for the Dimwise KL Divergence term
+    use_mss: Boolean indicating whether to use Minibatch Stratified Sampling (MSS) or Minibatch Weighted Sampling (MWS)
       
   Returns:
-      The L2 regularization loss.
+    A tuple containing:
+      - The total weighted loss value
+      - The Mutual Information term
+      - The Total Correlation term
+      - The Dimwise KL Divergence term
+    Note: negated to match the loss minimization objective.
   """
-  l2_loss = torch.tensor(0., device=device)
+  batch_size, l_dim = z.shape
   
-  for param in parameters:
-    if param.requires_grad:
-      l2_loss += torch.sum(param ** 2)
-  
-  return weight * l2_loss
+  log_qzx = log_gauss_density(z, mu, log_var).sum(dim=-1)
+  log_prior = log_gauss_density(z, torch.zeros_like(mu), torch.zeros_like(log_var)).sum(dim=-1)
 
+  log_q_batch_perm = log_gauss_density(
+    z[:,None,:],
+    mu[None,:,:],
+    log_var[None,:,:]
+  )
+  
+  if use_mss:
+    logiw_mat = log_importance_weight_matrix(batch_size, dataset_size, device=z.device)
+    
+    log_qz = torch.logsumexp(
+      logiw_mat + log_q_batch_perm.sum(dim=-1), dim=-1
+      )  # MMS [B]
+    log_prod_qz = (
+        torch.logsumexp(
+            logiw_mat.unsqueeze(-1) + log_q_batch_perm,
+            dim=1,
+        )
+    ).sum(
+        dim=-1
+    )  # MMS [B]
+    
+  else:
+    log_qz = torch.logsumexp(log_q_batch_perm.sum(dim=-1), dim=-1) - torch.log(
+        torch.tensor([z.shape[0] * dataset_size]).to(z.device)
+    )  # MWS [B]
+    log_prod_qz = (
+        torch.logsumexp(log_q_batch_perm, dim=1)
+        - torch.log(torch.tensor([z.shape[0] * dataset_size]).to(z.device))
+    ).sum(
+        dim=-1
+    )  # MWS [B]
+  
+  # Negated to match the loss minimization objective
+  mi_loss = -(log_qzx - log_qz).mean()
+  tc_loss = -(log_qz - log_prod_qz).mean()
+  dimwise_kld_loss = -(log_prod_qz - log_prior).mean()
+  
+  return (
+    alpha * mi_loss + beta * tc_loss + gamma * dimwise_kld_loss,
+    mi_loss,
+    tc_loss,
+    dimwise_kld_loss
+  )
+  
 
 if __name__ == "__main__":
   import matplotlib.pyplot as plt
