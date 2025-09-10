@@ -49,7 +49,41 @@ def concat_embedding(emb, X):
   return torch.cat((emb, X), dim=1)
 
 
-class KameEmbedding(nn.Module):
+class KenkuModule(nn.Module):
+  """
+  Base class for all Kenku modules. Provides a shared field 'inference', 
+  to set and determine the current state of the module/network.
+  """
+  def __init__(self):
+    super(KenkuModule, self).__init__()
+    self.inference = False
+    
+  def train(self, *args, **kwargs):
+    self.inference = False
+    
+    for module in self.children():
+      module.training = True
+      if isinstance(module, KenkuModule):
+        module.inference = False
+    
+  def eval(self, *args, **kwargs):
+    self.inference = False
+    
+    for module in self.children():
+      module.training = False
+      if isinstance(module, KenkuModule):
+        module.inference = False
+  
+  def infer(self, *args, **kwargs):
+    self.inference = True
+    
+    for module in self.children():
+      module.training = False
+      if isinstance(module, KenkuModule):
+        module.inference = True
+
+
+class KameEmbedding(KenkuModule):
   def __init__(self, n_accents, n_channels):
     super(KameEmbedding, self).__init__()
     
@@ -103,7 +137,7 @@ class KameEmbedding(nn.Module):
     return age_encoding
     
     
-class KameBlock(nn.Module):
+class KameBlock(KenkuModule):
   def __init__(self,
                in_ch: int,
                conv_ch: int,
@@ -146,9 +180,7 @@ class KameBlock(nn.Module):
     self.paddings = [None] * num_conv_layers
     
     if dilations is None:
-      dilations = [3**(i%4) for i in range(num_conv_layers)]
-      # # TODO Temp, remove if you suddenly find this
-      # dilations.reverse()
+      dilations = [3**(i%4) for i in range(num_conv_layers)]  # 1,3,9,27,1,3,9,27
       
     else:
       assert len(dilations) == num_conv_layers,\
@@ -184,7 +216,9 @@ class KameBlock(nn.Module):
   def forward(self, X: Tensor, speaker_info: Tuple[List[int], List[str], List[str]]):
     batch_size, in_ch, timesteps = X.shape
     
-    if not self.training and self.paddings[0] is not None:
+    # Automatically warn and clear dynamic paddings if the batch sizes don't line up
+    # between the stored paddings and the input batch.
+    if self.inference and self.paddings[0] is not None:
       input_batch_size = len(X)
       padding_batch_size = len(self.paddings[0])
       if input_batch_size != padding_batch_size:
@@ -203,7 +237,7 @@ class KameBlock(nn.Module):
     for i, layer in enumerate(self.conv_blocks):
       X_, padding = layer(X_, embedding, padding=self.paddings[i])
       
-      if not self.training:
+      if self.inference:
         self.paddings[i] = padding
     
     X_emb = concat_embedding(embedding, X_)
@@ -224,7 +258,7 @@ class KameBlock(nn.Module):
     self.paddings = [None] * len(self.conv_blocks)
   
   
-class ConvGLU(nn.Module):
+class ConvGLU(KenkuModule):
   """1D Convolutional GLU block. Features:
       - Speaker embedding
       - Causal padding (i.e. tail of the previous forward call's input prepended to current input)
@@ -279,7 +313,7 @@ class ConvGLU(nn.Module):
     return Y, padding
   
 
-class ScaledDotProductAttention(nn.Module):
+class ScaledDotProductAttention(KenkuModule):
   def forward(self, K, V, Q):
     """Manual scaled dot product attention. Since the attention matrix should be passed for loss calculation.
 
@@ -297,7 +331,7 @@ class ScaledDotProductAttention(nn.Module):
     return R, A
   
 
-class AttentionPredictor(nn.Module):
+class AttentionPredictor(KenkuModule):
   def __init__(self,
                in_ch: int,
                conv_ch: int,
@@ -363,7 +397,7 @@ class AttentionPredictor(nn.Module):
     return norm_gauss_att, means, stds
     
     
-class MaskedGlobalPool(nn.Module):
+class MaskedGlobalPool(KenkuModule):
   def __init__(self, pooling_type: Optional[str] = 'mean'):
     super(MaskedGlobalPool, self).__init__()
     
@@ -371,7 +405,9 @@ class MaskedGlobalPool(nn.Module):
     self.pooling_type = pooling_type
     
   def forward(self, X: Tensor, mask: Tensor):
-    mask = mask.unsqueeze(1)
+    if len(mask.shape) == 2:  # Ensure empty channel dim
+      mask = mask[:,None,:]
+      
     if mask.shape[-1] != X.shape[-1]:
       print(f"Mask shape {mask.shape} does not match input shape {X.shape}. Reshaping mask to match input.")
       batch_size, _, n_frames = X.shape
@@ -388,7 +424,7 @@ class MaskedGlobalPool(nn.Module):
       return torch.max(masked_x, dim=-1)[0]
       
       
-class SpeakerInfoEncoder(nn.Module):
+class SpeakerInfoEncoder(KenkuModule):
   def __init__(self,
                in_ch: int,
                conv_ch: int,
@@ -402,7 +438,6 @@ class SpeakerInfoEncoder(nn.Module):
     super(SpeakerInfoEncoder, self).__init__()
     
     if dilations is None:
-      # Shorter dilation sequence since we'll pool at the end
       dilations = [3**(i%3) for i in range(num_conv_layers)]  # 1,3,9,1,3,9...
     
     else:
@@ -441,7 +476,6 @@ class SpeakerInfoEncoder(nn.Module):
     batch_size, in_ch, n_frames = X.shape
     
     empty_embedding = torch.empty((batch_size, 0, n_frames), device=device, dtype=dtype)
-    empty_padding   = torch.empty((batch_size, in_ch, 0), device=device, dtype=dtype)
     
     #=== Forward Pass ===#
     X_ = self.dropout(X)
@@ -449,17 +483,11 @@ class SpeakerInfoEncoder(nn.Module):
     
     # Pass through Conv GLU blocks.
     for layer in self.conv_blocks:
-      conv_ch = self.conv_blocks[0].conv.in_channels
-      conv_frames = X_.shape[-1]
-      empty_embedding = torch.empty((batch_size, 0, conv_frames), device=device, dtype=dtype)
-      empty_padding   = torch.empty((batch_size, conv_ch, 0), device=device, dtype=dtype)
-      X_, _ = layer(X_, empty_embedding, padding=empty_padding)
-      
+      empty_embedding = torch.empty((batch_size, 0, n_frames), device=device, dtype=dtype)
+      X_, _ = layer(X_, empty_embedding, padding=None)
     
     X_pool = self.global_pool(X_, mask)
     
-    empty_embedding = torch.empty((batch_size, 0, 0), device=device, dtype=dtype)
-    empty_padding  = torch.empty((batch_size, X_pool.shape[-1], 0), device=device, dtype=dtype)
     Y = self.out_layer(X_pool)
     return Y
 
@@ -469,8 +497,9 @@ if __name__ == "__main__":
   mode = [
     'embed',
     'att pred',
-    'encode embed'
-  ][2]
+    'encode embed',
+    'masked pool'
+  ][3]
   
   batch_size  = 4
   in_ch       = 5
@@ -606,4 +635,26 @@ if __name__ == "__main__":
   # Y = kb(X, [0] * 16)
   # print(Y)
   # print(Y.shape)
-# %%
+  
+  if mode == 'masked pool':
+    X = torch.ones((batch_size, in_ch, timesteps), dtype=torch.float32, device=device)
+    X *= torch.arange(1, in_ch + 1, device=device)[None,:,None]  # Scale by channel index
+    mask = torch.ones((batch_size, 1, timesteps), dtype=torch.float32, device=device)
+    
+    print(f"X: {X}")
+    mgp = MaskedGlobalPool(pooling_type='avg')
+    
+    print(f'Full Mask: {mgp(X, mask)}')
+    
+    for b in range(batch_size):
+      mask[b, :, 10 + 5 * b:] = 0.
+      
+    X[~mask.repeat(1,in_ch,1).bool()] *= 2.
+    print(mask.to(dtype=torch.int32))
+    # mask = torch.ones((batch_size, 1, timesteps), dtype=torch.float32, device=device)
+    
+    sie = SpeakerInfoEncoder(in_ch, conv_ch, out_ch)
+    print(sie(X, mask))
+    
+    print(f'Staggered Mask: {mgp(X, mask)}')
+    

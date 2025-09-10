@@ -28,6 +28,7 @@ from data.load import ParallelDatasetFactory, ParallelMelspecDataset, collate_fn
 from data.util import save_config, load_config, config_to_str, recursive_to_device, recursive_map
 from network.modules import KameBlock
 from network import KenkuModel, KenkuTeacher, KenkuStudent, stack_frames, unstack_frames, append_zero_frame
+from train.optimize import group_student_params, IncrementalThawScheduler
 
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -364,7 +365,8 @@ def train_model(model: KenkuModel,
                 train_loss_interval     = 100,
                 DAL_weight: float       = 0.,
                 OAL_weight: float       = 0.,
-                DAL_weight_decay: float = None):
+                DAL_weight_decay: float = None,
+                scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None):
 
   DAL_weight_init = DAL_weight
   OAL_weight_init = OAL_weight
@@ -419,6 +421,8 @@ def train_model(model: KenkuModel,
       model.zero_grad()
       loss.backward()
       optimizer.step()
+      if scheduler is not None:
+        scheduler.step()
 
       running_loss.append(loss.detach().cpu().item())
 
@@ -499,7 +503,7 @@ def main():
                       help='Batch size.')
   parser.add_argument('--main-loss', type=str, default='mse', metavar='STR',
                       help='Main spectrogram loss function. MSE or MAE.')
-  parser.add_argument('--learning-rate', '-lr', type=float, default=5e-5, metavar='FLOAT',
+  parser.add_argument('--learning-rate', '-lr', type=float, default=1e-6, metavar='FLOAT',
                       help='Learning rate.')
   parser.add_argument('--adam-betas', type=float, nargs=2, default=[0.9, 0.999],  metavar='FLOAT',
                       help='Betas use for the Adam optimizer.')
@@ -599,11 +603,6 @@ def main():
   if dataset_config['preload_melspecs']:
     train_set.preload_melspecs()
     test_set.preload_melspecs()
-    
-  # Passed as worker_init_fn kwarg in DataLoader.
-  def limit_worker_resources(worker_id):
-    # Set process specific memory limits.
-    torch.set_num_threads(1)
 
   data_loader_kwargs = {
     'shuffle'     : True,
@@ -658,19 +657,28 @@ def main():
   
     model.load_teacher_state_dict(teacher_checkpoint['model'])
     
+    # Create parameter groups for incremental and gradual thawing of transferred weights
+    param_groups = group_student_params(model, format_for_optimizer=True)
+    
     del(teacher_checkpoint)
     gc.collect()
   
     print(f"Successfully created student from teacher checkpoint at {teacher_checkpoint_path}.")
   
+  else:
+    param_groups = model.parameters()
   
   #=== Initialize Optimizer ===#
-  
-  optimizer = torch.optim.Adam(model.parameters(),
+    
+  optimizer = torch.optim.Adam(param_groups,
                                lr           = train_config['learning_rate'],
                                betas        = train_config['adam_betas'],
                                weight_decay = 0.01)
   
+  # If a student model was created from a teacher, set up an incremental thaw scheduler
+  if model_config['from_teacher']:
+    total_steps = len(train_loader) * train_config['epochs']
+    thaw_scheduler = IncrementalThawScheduler(optimizer, total_steps=total_steps)
   
   #=== Load Checkpoint ===#
   
@@ -767,7 +775,8 @@ def main():
               epochs           = train_config['epochs'],
               DAL_weight       = train_config['DAL_weight'],
               OAL_weight       = train_config['OAL_weight'],
-              DAL_weight_decay = train_config['DAL_weight_decay']
+              DAL_weight_decay = train_config['DAL_weight_decay'],
+              scheduler        = thaw_scheduler if model_config['from_teacher'] else None
               )
 
 if __name__ == '__main__':

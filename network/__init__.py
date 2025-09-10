@@ -10,7 +10,7 @@ from torch.nn.utils.parametrizations import weight_norm
 from typing import List, Tuple, Union, Optional
 from pathlib import Path
 
-from network.modules import KameBlock, ScaledDotProductAttention, AttentionPredictor, SpeakerInfoEncoder
+from network.modules import KenkuModule, KameBlock, ScaledDotProductAttention, AttentionPredictor, SpeakerInfoEncoder
 
 from train.loss import mse_loss, mae_loss, auxil_att_loss, diag_att_loss, ortho_att_loss, beta_tcvae_loss
 
@@ -165,7 +165,7 @@ def apply_position_encoding(*mels: Union[Tensor, List[Tensor]], pos_weight = 1.0
 ### Models ###
 ##############
 
-class KenkuModel(nn.Module):
+class KenkuModel(KenkuModule):
   def __init__(self, 
                in_ch: int,
                conv_ch: int,
@@ -188,8 +188,6 @@ class KenkuModel(nn.Module):
       'dropout_rate': dropout_rate
     }
     
-    self.inference = False
-    
     self.stack_factor = stack_factor
     sf = stack_factor
     
@@ -205,34 +203,13 @@ class KenkuModel(nn.Module):
       att_ch, conv_ch, out_ch * sf, embed_ch, num_accents, **kame_block_kwargs
     )
     
-  def train(self, *args, **kwargs):
-    self.inference = False
-    super(KenkuModel, self).train(*args, **kwargs)
-    
-  def eval(self, *args, **kwargs):
-    self.inference = False
-    super(KenkuModel, self).eval(*args, **kwargs)
-  
-  def infer(self, *args, **kwargs):
-    self.inference = True
-    super(KenkuModel, self).eval(*args, **kwargs)
-    
   def encode_inputs(self, src_mel, tgt_mel, src_info, tgt_info, stack = True):
     # future_KV = torch.jit.fork(self.src_encoder,     (X_src, k_src))
     # future_Q  = torch.jit.fork(self.tgt_encoder, (X_tgt, k_tgt))
 
     # K, V = torch.jit.wait(future_KV)
     # Q    = torch.jit.wait(future_Q)
-    
-    # Automatically warn and clear dynamic paddings if the batch sizes don't line up
-    # between the stored paddings and the input batch.
-    if self.src_encoder.paddings[0] is not None:
-      input_batch_size = len(src_mel)
-      padding_batch_size = len(self.src_encoder.paddings[0])
-      if input_batch_size != padding_batch_size:
-        logger.warning(f"Input batch size ({input_batch_size}) doesn't match padding batch size ({padding_batch_size}). Clearing paddings.")
-        self.clear_paddings()
-    
+ 
     if stack:
       src_mel = stack_frames(src_mel, self.stack_factor)
       tgt_mel = stack_frames(tgt_mel, self.stack_factor)
@@ -293,8 +270,9 @@ class KenkuTeacher(KenkuModel):
     
     return Y, A
   
-  def to_student(self, student_kwargs):
-    student = KenkuStudent(*self.init_kwargs, 
+  def to_student(self, student_kwargs=None):
+    student_kwargs = {} if student_kwargs is None else student_kwargs
+    student = KenkuStudent(*self.init_args, 
                            **{**self.init_kwargs, **student_kwargs})
     
     student.load_teacher_state_dict(self.state_dict())
@@ -438,10 +416,14 @@ class KenkuStudent(KenkuModel):
     
     self.load_state_dict(state_dict)
     
-    # Freeze copied weights.
-    for name, param in self.named_parameters():
-      if name in tea_keys:
-        param.requires_grad = False
+    # # Freeze copied weights.
+    # for name, param in self.named_parameters():
+    #   if name in tea_keys:
+    #     param.requires_grad = False
+    
+    # Freeze only the target encoder weights
+    for param in self.tgt_encoder.parameters():
+      param.requires_grad = False
   
   def calc_loss(self, src_mel, tgt_mel, src_mask, tgt_mask, src_info, tgt_info, 
                 main_loss_fn = 'mse', 
@@ -559,32 +541,51 @@ class DRLKenkuTeacher(KenkuTeacher):
     )
 
 if __name__ == "__main__":
-  from torch.utils.data import DataLoader
-  from data.load import ParallelMelspecDataset, ParallelDatasetFactory, collate_fn
   
-  torch.set_default_device("cuda:0")
+  mode = [
+    'teacher to student',
+    'segmented',
+  ][0]
   
-  factory = ParallelDatasetFactory(dataset_dir = "../Data/processed/VCTK")
+  if mode == 'teacher to student':
+    from torch.utils.data import DataLoader
+    from data.load import ParallelMelspecDataset, ParallelDatasetFactory, collate_fn
+    
+    torch.set_default_device("cuda:0")
+    
+    factory = ParallelDatasetFactory(dataset_dir = "../Data/processed/VCTK")
+    
+    dataset = factory.get_dataset(min_transcript_samples=100)
+    
+    loader = DataLoader(
+      dataset, 
+      batch_size=8,
+      shuffle=True,
+      num_workers=0,  # Set to 0 or os.cpu_count() depending on the environment
+      drop_last=True,
+      collate_fn=collate_fn,
+      generator=torch.Generator(device='cuda'),
+    )
+    
+    ch = 80
+    sf = 1
+    model = KenkuTeacher(ch, ch, ch, ch, 12, 11)
+    model = model.to_student()
+    
+    src_mel, tgt_mel, src_mask, tgt_mask, src_info, tgt_info = next(iter(loader))
+    loss = model.calc_loss(src_mel, tgt_mel, src_info, tgt_info)
+    print(loss)
+    # loss = model.calc_loss(*batch, stack_factor=sf)
   
-  dataset = factory.get_dataset(min_transcript_samples=100)
-  
-  loader = DataLoader(
-    dataset, 
-    batch_size=8,
-    shuffle=True,
-    num_workers=0,  # Set to 0 or os.cpu_count() depending on the environment
-    drop_last=True,
-    collate_fn=collate_fn,
-    generator=torch.Generator(device='cuda'),
-  )
-  
-  ch = 80
-  sf = 1
-  model = KenkuTeacher(ch, ch, ch, ch, 12, 11)
-  model = model.to_student()
-  
-  src_mel, tgt_mel, src_mask, tgt_mask, src_info, tgt_info = next(iter(loader))
-  loss = model.calc_loss(src_mel, tgt_mel, src_info, tgt_info)
-  print(loss)
-  # loss = model.calc_loss(*batch, stack_factor=sf)
+  elif mode == 'segmented':
+    
+    print('=== Teacher Test ===')
+    
+    m = KenkuTeacher(5, 5, 5, 5, 2, 1, stack_factor=1)
+    
+    X = torch.rand(3, 5, 8)
+    mask = torch.ones(3, 1, 8)
+    info = torch.rand(3, 3, 8)
+    
+    full_Y = m(X, X, mask, mask, info, info)
   

@@ -194,12 +194,12 @@ class AlignedRandomClip(MelspecTransform):
     # Set min_clip such that the frames of the clipped spectrograms doesn't exceed self.max_output_frames
     # This sets an upper limit to the nr. of frames of a spectrogram, thereby making memory usage more consistent between batches.
     min_clip = max(1, path_length - self.max_output_frames)
-    max_clip = int(self.max_clip_ratio * path_length)
+    max_clip = max(min_clip, int(self.max_clip_ratio * path_length))
     
     # Randomly (uniform) determine how many steps in the path
     # should be clipped from either side.
     try:
-      n_clipped_steps = rng.integers(min_clip, max_clip)
+      n_clipped_steps = rng.integers(min_clip, max_clip + 1)
     except ValueError as e:
       raise ValueError(f"min_clip: {min_clip}, max_clip: {max_clip}, path_length: {path_length}") from e
     
