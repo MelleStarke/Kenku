@@ -13,13 +13,13 @@ from dataclasses import dataclass, field
 
 from pathlib import Path, PurePath
 
-from typing import List, Tuple, Optional, Union, Dict
+from typing import List, Tuple, Optional, Union, Dict, Callable
 
 from torch.utils.data import Dataset, DataLoader
 
 from itertools import product
 
-from data.augment import get_default_augment_fn
+from data.augment import get_default_augment_fn, get_student_fn
 from network import stack_frames
 
 
@@ -132,14 +132,27 @@ def collate_fn(batch):
           src_mask_batch,    tgt_mask_batch, 
           src_info_batch,    tgt_info_batch)
     
-def augmented_collate_fn(batch):
-  #=== Augmentation ===#
-  augment_fn = get_default_augment_fn()
+def get_augmented_collate_fn(augment_fn=None):
+  if augment_fn is None:
+    augment_fn = get_default_augment_fn()
+    
+  if isinstance(augment_fn, str):
+    match augment_fn:
+      case 'student':
+        augment_fn = get_student_augment_fn()
+      case 'teacher':
+        augment_fn = get_default_augment_fn()
+      case _:
+        raise ValueError("If augment_fn is a string, it must be either 'student' or 'teacher'.")
   
-  batch = [(*augment_fn(src_mel, tgt_mel), src_info, tgt_info)
-           for src_mel, tgt_mel, src_info, tgt_info in batch]
-
-  return collate_fn(batch)
+  assert isinstance(augment_fn, Callable), 'augment_fn must be a callable, string, or None.'
+  
+  def augmented_collate_fn(batch):
+    batch = [(*augment_fn(src_mel, tgt_mel), src_info, tgt_info)
+            for src_mel, tgt_mel, src_info, tgt_info in batch]
+    return collate_fn(batch)
+  
+  return augmented_collate_fn
     
 @dataclass
 class MelspecSample:

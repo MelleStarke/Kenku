@@ -144,10 +144,22 @@ def compose_random_sines(max_period: int,
     return composite
 
   return inner
+
+def get_student_augment_fn():
+  clip      = AlignedRandomClip(keep_aligned=True)
+  time_warp = RandomStretchedTimeWarp()
+  
+  def fn_composition(src_mel: Tensor, tgt_mel: Tensor):
+    src_mel, tgt_mel = clip(src_mel, tgt_mel)
+    src_mel, tgt_mel = time_warp([src_mel, tgt_mel])
+    
+    return src_mel, tgt_mel
+  
+  return fn_composition
   
 def get_default_augment_fn():
   clip       = AlignedRandomClip()
-  power_warp = RandomPowerWarp()
+  # power_warp = RandomPowerWarp()
   time_warp  = RandomStretchedTimeWarp()
   
   def fn_composition(src_mel: Tensor, tgt_mel: Tensor):
@@ -171,11 +183,13 @@ class MelspecTransform(ABC):
 class AlignedRandomClip(MelspecTransform):
   def __init__(self, 
                max_clip_ratio:    float = 0.7,
-               max_output_frames: int   = 500):
+               max_output_frames: int   = 500,
+               keep_aligned:      bool  = False):
     assert 0.0 < max_clip_ratio < 1.0, f"max_clip_ratio must be within (0.0, 1.0). Got: max_clip_ratio = {max_clip_ratio}"
     
     self.max_clip_ratio    = max_clip_ratio
     self.max_output_frames = max_output_frames 
+    self.keep_aligned      = keep_aligned
     
   def __call__(self, src_mel: Tensor, tgt_mel: Tensor):
     n_src_frames = src_mel.shape[-1]
@@ -209,6 +223,21 @@ class AlignedRandomClip(MelspecTransform):
     # Get corresponding indices in original spectrograms
     src_start, src_end = src_indices[start_idx], src_indices[end_idx]
     tgt_start, tgt_end = tgt_indices[start_idx], tgt_indices[end_idx]
+    
+    if self.keep_aligned:
+      # For aligned output, we work directly with the DTW path indices
+      # The clipped spectrograms will have the same length (end_idx - start_idx)
+      # and will be aligned frame-by-frame
+      
+      clipped_src_indices = src_indices[start_idx:end_idx]
+      clipped_tgt_indices = tgt_indices[start_idx:end_idx]
+      
+      # Extract frames according to the DTW alignment
+      # This creates aligned spectrograms with the same shape
+      clipped_src = src_mel[..., clipped_src_indices]
+      clipped_tgt = tgt_mel[..., clipped_tgt_indices]
+      
+      return clipped_src, clipped_tgt
     
     # Get the resulting ratios of clipped frames to total frames for both spectrograms
     src_clip_ratio = 1 - (src_end - src_start) / n_src_frames
@@ -349,11 +378,19 @@ class RandomStretchedTimeWarp(MelspecTransform):
         
     return warp_matrix
   
-  def apply_time_warp(self, melspec, warp_matrix=None, ax=None):
-    n_src_frames = melspec.shape[-1]
+  def apply_time_warp(self, melspecs, warp_matrix=None, ax=None):
+    if not isinstance(melspecs, list):
+      melspecs = [melspecs]
+    
+    n_src_frames = melspecs[0].shape[-1]
+    
+    assert all([mel.shape[-1] == n_src_frames for mel in melspecs[:-1]]), \
+      f"The provided spectrograms don't have the same number of frames: {list(map(lambda mel: mel.shape[-1], melspecs))}"
+    
     n_warp_frames = int(rng.uniform(self.min_stretch, self.max_stretch) * n_src_frames)
     n_warp_frames = min(n_warp_frames, self.max_frames)
     
+    # Make warp matrix
     if warp_matrix is None:
       composite_fn = compose_random_sines(max_period=n_warp_frames,
                                           min_sines=self.min_sines,
@@ -378,9 +415,13 @@ class RandomStretchedTimeWarp(MelspecTransform):
       
       warp_matrix = self.create_warp_matrix(warped_idxs, n_src_frames=n_src_frames)
       
-    # Warp spectrogram through matrix multiplication  
-    warped_melspec = melspec @ warp_matrix.T
-    return warped_melspec
+    # Warp spectrograms through matrix multiplication  
+    warped_melspecs = [melspec @ warp_matrix.T for melspec in melspecs]
+    
+    # Only return as a list of melspecs if we have more than 1 melspec
+    if len(warped_melspecs) == 1:
+      return warped_melspecs[0]
+    return warped_melspecs
   
   def __call__(self, melspec: Tensor, ax=None):
     return self.apply_time_warp(melspec, ax=ax)
@@ -545,8 +586,9 @@ if __name__ == '__main__':
   mode = [
     'clip',
     'warp',
-    'power'
-  ][2]
+    'power',
+    'student'
+  ][3]
   # rc = RandomClip(10, 0.45)
   
   rtw = RandomStretchedTimeWarp() 
@@ -702,6 +744,49 @@ if __name__ == '__main__':
       axes[2,0].set_title(f"Power Warping Function")
       axes[2,0].legend()
     
+      print(f" src min/max: {src_mel.min():.4}, {src_mel.max():.4}\t" f"warp min/max: {src_warp.min():.4}, {src_warp.max():.4}")
+      print(f" tgt min/max: {tgt_mel.min():.4}, {tgt_mel.max():.4}\t" f"warp min/max: {tgt_warp.min():.4}, {tgt_warp.max():.4}\n")
+      
+      # plt.tight_layout()
+      plt.show()
+  
+  if mode == 'student':
+    student_augment_fn = get_student_augment_fn()
+    
+    for i in range(10):
+      # src stuff
+      mask    = src_masks[i].squeeze()
+      mask_idxs = torch.arange(1, len(mask) + 1)
+      mask_idxs = (mask_idxs * mask)
+      max_mask_idx = int(mask_idxs.max())
+      src_mel = src_mels[i,...,:max_mask_idx]
+      n_src_frames = src_mel.shape[-1]
+      
+      # tgt stuff
+      mask    = tgt_masks[i].squeeze()
+      mask_idxs = torch.arange(1, len(mask) + 1)
+      mask_idxs = (mask_idxs * mask)
+      max_mask_idx = int(mask_idxs.max())
+      tgt_mel = tgt_mels[i,...,:max_mask_idx]
+      n_tgt_frames = tgt_mel.shape[-1]
+      
+      src_warp, tgt_warp = student_augment_fn(src_mel, tgt_mel)
+      
+      vmin = min(src_mel.min(), tgt_mel.min(), src_warp.min(), tgt_warp.min())
+      vmax = max(src_mel.max(), tgt_mel.max(), src_warp.max(), tgt_warp.max())
+      
+      fig, axes = plt.subplots(2, 2)
+      
+      axes[0,0].imshow(src_mel, vmin=vmin, vmax=vmax, aspect='auto')
+      axes[0,0].set_title("Source")
+      axes[1,0].imshow(tgt_mel, vmin=vmin, vmax=vmax, aspect='auto')
+      axes[1,0].set_title("Target")
+      
+      axes[0,1].imshow(src_warp, vmin=vmin, vmax=vmax, aspect='auto')
+      axes[0,1].set_title("Warped source")
+      axes[1,1].imshow(tgt_warp, vmin=vmin, vmax=vmax, aspect='auto')
+      axes[1,1].set_title("Warped target")
+      
       print(f" src min/max: {src_mel.min():.4}, {src_mel.max():.4}\t" f"warp min/max: {src_warp.min():.4}, {src_warp.max():.4}")
       print(f" tgt min/max: {tgt_mel.min():.4}, {tgt_mel.max():.4}\t" f"warp min/max: {tgt_warp.min():.4}, {tgt_warp.max():.4}\n")
       

@@ -1,5 +1,5 @@
 import torch
-from torch.optim.lr_scheduler import LambdaLR, _warn_get_lr_called_within_step
+from torch.optim.lr_scheduler import LambdaLR
 
 import numpy as np
 
@@ -73,7 +73,7 @@ class IncrementalThawScheduler(LambdaLR):
   def __init__(self, 
                optimizer,
                total_steps: Optional[int] = None, 
-               warmup_steps: Union[int, float] = 0.15, 
+               warmup_steps: Union[int, float] = 0.20, 
                thawing_steps: Union[int, float] = 0.5):
     """
     Scheduler that thaws groups of parameters incrementally during training.
@@ -151,8 +151,6 @@ class IncrementalThawScheduler(LambdaLR):
   @override
   def get_lr(self) -> list[float]:
     """Compute learning rate."""
-    _warn_get_lr_called_within_step(self)
-
     return [
       base_lr * lmbda(self.last_step)
       for lmbda, base_lr in zip(self.lr_lambdas, self.base_lrs)
@@ -191,7 +189,7 @@ if __name__ == "__main__":
         
     import matplotlib.pyplot as plt
     for i, lrs in enumerate(group_lrs):
-      plt.plot(lrs, label=f'{opt.param_groups[i]['name']}')
+      plt.plot(lrs, label=f"{opt.param_groups[i]['name']}")
     plt.axvline(x=int(total_steps * warmup_steps) - 1, color='gray', linestyle='--')
     plt.axvline(x=int(total_steps * (warmup_steps + thawing_steps)) - 1, color='gray', linestyle='--')
     

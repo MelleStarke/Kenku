@@ -24,7 +24,7 @@ from torchvision.utils import make_grid
 from tqdm import tqdm
 
 # Local imports
-from data.load import ParallelDatasetFactory, ParallelMelspecDataset, collate_fn, augmented_collate_fn
+from data.load import ParallelDatasetFactory, ParallelMelspecDataset, collate_fn, get_augmented_collate_fn
 from data.util import save_config, load_config, config_to_str, recursive_to_device, recursive_map
 from network.modules import KameBlock
 from network import KenkuModel, KenkuTeacher, KenkuStudent, stack_frames, unstack_frames, append_zero_frame
@@ -33,6 +33,9 @@ from train.optimize import group_student_params, IncrementalThawScheduler
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+# The training script can recovery from the occasional CUDA OOM error by clearing the cache and moving on to the next training iteration. 
+# This variable determines how many times it is caught before termination of the script.
+MAX_OOM_ERROR_CATCHES = 10
 
 ###############
 ### Logging ###
@@ -216,8 +219,6 @@ class TensorboardManager:
     self.global_step = epoch * self.n_train_batches + batch_nr
     
     if numerator % self.interval == 0:
-      # torch.cuda.empty_cache()
-      # gc.collect()
       with torch.no_grad():
         self.model.eval()
         
@@ -231,6 +232,7 @@ class TensorboardManager:
         torch.cuda.empty_cache()
         torch.cuda.synchronize()  # Ensure all CUDA operations are complete
       
+      gc.collect()
       self.model.train()
       
   def write_config(self, config: dict):
@@ -403,16 +405,21 @@ def train_model(model: KenkuModel,
       
       try:
         loss, A = model.calc_loss(*batch, main_loss_fn=main_loss_fn, loss_weights=loss_weights)
-      except torch.cuda.OutOfMemoryError() as e:
-        err_msg = f"[ERROR] CUDA out of memory for training batch with shape {batch[0].shape}.\n" \
+      except torch.cuda.OutOfMemoryError as e:
+        if MAX_OOM_ERROR_CATCHES <= 0:
+          raise e
+        
+        err_msg = f"CUDA out of memory for training batch with shape {batch[0].shape}.\n" \
                    "Clearing CUDA cache and continuing to next iteration"
-        print(err_msg)
+        print(f"[ERROR] {err_msg}")
         logger.error(err_msg)
         
         model.zero_grad()
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
         gc.collect()
+        
+        MAX_OOM_ERROR_CATCHES -= 1
         continue
         
         
@@ -585,6 +592,25 @@ def main():
                        'train_config'  : train_config}))
 
   
+  #=== Initialize Model ===#
+
+  model_class = model_config['model_class'].lower().replace(' ', '')
+  
+  if model_class in ['kenkuteacher', 'teacher', 'teach', 'tea']:
+    model = KenkuTeacher
+    is_student = False
+  elif model_class in ['kenkustudent', 'student', 'stud', 'stu']:
+    model = KenkuStudent
+    is_student = True
+  else:
+    raise ValueError('Incorrect model class. Use `KenkuTeacher` or `KenkuStudent`.')
+  
+  model_init_args = model_config.copy()
+  for remove_key in ['model_class', 'from_teacher']:
+    model_init_args.pop(remove_key)
+    
+  model = model(**model_init_args)
+  
   #=== Load/Create Datasets ===#
   
   print(f"\n===== Data =====")
@@ -610,6 +636,9 @@ def main():
     'pin_memory'  : True,
     'persistent_workers': True
   }
+  
+  augmented_collate_fn = get_augmented_collate_fn('student' if is_student else 'teacher')
+  
   train_loader = DataLoader(train_set, 
                             batch_size      = train_config['batch_size'],
                             collate_fn      = augmented_collate_fn, 
@@ -628,23 +657,6 @@ def main():
          f"Num train batches: {len(train_loader)}\n" 
          f"Num test batches:  {len(test_loader)} available | {train_config['max_test_batches']} max"))
   
-  
-  #=== Initialize Model ===#
-  
-  model_class = model_config['model_class'].lower().replace(' ', '')
-  
-  if model_class in ['kenkuteacher', 'teacher', 'teach', 'tea']:
-    model = KenkuTeacher
-  elif model_class in ['kenkustudent', 'student', 'stud', 'stu']:
-    model = KenkuStudent
-  else:
-    raise ValueError('Incorrect model class. Use `KenkuTeacher` or `KenkuStudent`.')
-  
-  model_init_args = model_config.copy()
-  for remove_key in ['model_class', 'from_teacher']:
-    model_init_args.pop(remove_key)
-    
-  model = model(**model_init_args)
   
   
   #=== Create Student from Teacher ===#
