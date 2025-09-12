@@ -288,13 +288,8 @@ class TensorboardManager:
       if bi == n_test_batches:
         break
       # print(f"\nTest batch shape: {batch[0].shape}")
-      print_memory_usage(f"TEST Batch {bi}: BEFORE sending to GPU")
       batch = recursive_to_device(batch, device)
-      print_memory_usage(f"TEST Batch {bi}: AFTER sending to GPU")
-      
-      print_memory_usage(f"TEST Batch {bi}: BEFORE loss calc")
       loss_comps, _ = self.model.calc_loss(*batch, as_components=True)
-      print_memory_usage(f"TEST Batch {bi}: AFTER loss calc")
       
       # Add to cumulative losses
       if test_losses is None:
@@ -425,15 +420,12 @@ def train_model(model: KenkuModel,
     running_loss = []
 
     for batch_index, batch in tqdm(enumerate(train_loader), total=len(train_loader), mininterval=60., disable=False):
-      print_memory_usage(f"Batch {batch_index}: BEFORE sending to GPU")
       batch = recursive_to_device(batch, device)
-      print_memory_usage(f"Batch {batch_index}: AFTER sending to GPU")
       
       tensorboard_manager.inform(epoch, batch_index)
       checkpoint_manager.inform(epoch, batch_index)
 
       model.clear_paddings()
-      print_memory_usage(f"Batch {batch_index}: BEFORE loss calc")
       
       with oom_handler:
         loss, A = model.calc_loss(*batch, main_loss_fn=main_loss_fn, loss_weights=loss_weights)
