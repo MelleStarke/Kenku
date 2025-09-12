@@ -24,7 +24,8 @@ from torchvision.utils import make_grid
 from tqdm import tqdm
 
 # Local imports
-from data.load import ParallelDatasetFactory, ParallelMelspecDataset, collate_fn, get_augmented_collate_fn
+from data.load import ParallelDatasetFactory, ParallelMelspecDataset, augment_collate_fn
+from data.augment import get_augment_fns
 from data.util import save_config, load_config, config_to_str, recursive_to_device, recursive_map
 from network.modules import KameBlock
 from network import KenkuModel, KenkuTeacher, KenkuStudent, stack_frames, unstack_frames, append_zero_frame
@@ -637,18 +638,18 @@ def main():
     'persistent_workers': True
   }
   
-  augmented_collate_fn = get_augmented_collate_fn('student' if is_student else 'teacher')
+  train_augment_fn, test_augment_fn = get_augment_fns('student' if is_student else 'teacher')
   
   train_loader = DataLoader(train_set, 
                             batch_size      = train_config['batch_size'],
-                            collate_fn      = augmented_collate_fn, 
+                            collate_fn      = augment_collate_fn(train_augment_fn), 
                             num_workers     = dataset_config['n_cores'],
                             prefetch_factor = 1,
                             **data_loader_kwargs)
   
   test_loader  = DataLoader(test_set,  
                             batch_size  = min(100, train_config['batch_size']),
-                            collate_fn  = collate_fn, 
+                            collate_fn  = augment_collate_fn(test_augment_fn), 
                             num_workers = 1,
                             **data_loader_kwargs)
   

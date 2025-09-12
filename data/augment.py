@@ -145,6 +145,48 @@ def compose_random_sines(max_period: int,
 
   return inner
 
+def get_augment_fns(model_type: str = 'teacher'):
+  """
+  Pseudo-factory function to get train and test data augmentation functions based on model type.
+  
+  Args:
+      model_type: Type of model ('teacher' or 'student')
+  """
+  model_type = model_type.lower()
+  if model_type in ['t' 'tea', 'teacher']:  
+    train_clip      = AlignedRandomClip()
+    train_time_warp = RandomStretchedTimeWarp()
+    
+    def train_augment_fn(src_mel: Tensor, tgt_mel: Tensor):
+      src_mel, tgt_mel = train_clip(src_mel, tgt_mel)
+      src_mel = train_time_warp(src_mel)
+      tgt_mel = train_time_warp(tgt_mel)
+      return src_mel, tgt_mel
+
+    # Returning None as the augment_fn will result in unaugmented data in data.load.augment_collate_fn()
+    return train_augment_fn, None
+  
+  elif model_type in ['s', 'stu', 'student']:
+    train_clip      = AlignedRandomClip(keep_aligned=True)
+    train_time_warp = RandomStretchedTimeWarp()
+    
+    # Abuse AlignedRandomClip with max_clip_ratio=0.0 to get frame-aligned spectrograms without any actual clipping
+    test_clip = AlignedRandomClip(max_clip_ratio=0.0, keep_aligned=True, max_output_frames=np.inf)
+    
+    def train_augment_fn(src_mel: Tensor, tgt_mel: Tensor):
+      src_mel, tgt_mel = train_clip(src_mel, tgt_mel)
+      src_mel, tgt_mel = train_time_warp([src_mel, tgt_mel])
+      return src_mel, tgt_mel
+    
+    def test_augment_fn(src_mel: Tensor, tgt_mel: Tensor):
+      src_mel, tgt_mel = test_clip(src_mel, tgt_mel)
+      return src_mel, tgt_mel
+    
+    return train_augment_fn, test_augment_fn
+  
+  else:
+    raise ValueError(f"Unknown model_type: {model_type}. Supported types are 'teacher' and 'student'.")
+
 def get_student_augment_fn():
   clip      = AlignedRandomClip(keep_aligned=True)
   time_warp = RandomStretchedTimeWarp()
@@ -185,7 +227,7 @@ class AlignedRandomClip(MelspecTransform):
                max_clip_ratio:    float = 0.7,
                max_output_frames: int   = 500,
                keep_aligned:      bool  = False):
-    assert 0.0 < max_clip_ratio < 1.0, f"max_clip_ratio must be within (0.0, 1.0). Got: max_clip_ratio = {max_clip_ratio}"
+    assert 0.0 <= max_clip_ratio < 1.0, f"max_clip_ratio must be within [0.0, 1.0). Got: max_clip_ratio = {max_clip_ratio}"
     
     self.max_clip_ratio    = max_clip_ratio
     self.max_output_frames = max_output_frames 
@@ -751,7 +793,8 @@ if __name__ == '__main__':
       plt.show()
   
   if mode == 'student':
-    student_augment_fn = get_student_augment_fn()
+    train_augment_fn, test_augment_fn = get_augment_fns('student')
+    student_augment_fn = test_augment_fn
     
     for i in range(10):
       # src stuff

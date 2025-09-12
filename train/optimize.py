@@ -73,8 +73,8 @@ class IncrementalThawScheduler(LambdaLR):
   def __init__(self, 
                optimizer,
                total_steps: Optional[int] = None, 
-               warmup_steps: Union[int, float] = 0.20, 
-               thawing_steps: Union[int, float] = 0.5):
+               warmup_steps: Union[int, float] = 0.1, 
+               thawing_steps: Union[int, float] = 0.4):
     """
     Scheduler that thaws groups of parameters incrementally during training.
     The thawing schedule is as follows:
@@ -192,6 +192,9 @@ if __name__ == "__main__":
       plt.plot(lrs, label=f"{opt.param_groups[i]['name']}")
     plt.axvline(x=int(total_steps * warmup_steps) - 1, color='gray', linestyle='--')
     plt.axvline(x=int(total_steps * (warmup_steps + thawing_steps)) - 1, color='gray', linestyle='--')
+    
+    plt.axvline(x=136, color='k', linestyle='-')
+    plt.axvline(x=173, color='k', linestyle='-')
     
     plt.xlabel('Step')
     plt.ylabel('Learning Rate')

@@ -19,7 +19,7 @@ from torch.utils.data import Dataset, DataLoader
 
 from itertools import product
 
-from data.augment import get_default_augment_fn, get_student_fn
+from data.augment import get_default_augment_fn, get_student_augment_fn
 from network import stack_frames
 
 
@@ -132,21 +132,13 @@ def collate_fn(batch):
           src_mask_batch,    tgt_mask_batch, 
           src_info_batch,    tgt_info_batch)
     
-def get_augmented_collate_fn(augment_fn=None):
+def augment_collate_fn(augment_fn = None):
+  assert augment_fn is None or isinstance(augment_fn, Callable), 'augment_fn must be a callable or None.'
+  
   if augment_fn is None:
-    augment_fn = get_default_augment_fn()
+    # Use unaugmented collate function
+    return collate_fn
     
-  if isinstance(augment_fn, str):
-    match augment_fn:
-      case 'student':
-        augment_fn = get_student_augment_fn()
-      case 'teacher':
-        augment_fn = get_default_augment_fn()
-      case _:
-        raise ValueError("If augment_fn is a string, it must be either 'student' or 'teacher'.")
-  
-  assert isinstance(augment_fn, Callable), 'augment_fn must be a callable, string, or None.'
-  
   def augmented_collate_fn(batch):
     batch = [(*augment_fn(src_mel, tgt_mel), src_info, tgt_info)
             for src_mel, tgt_mel, src_info, tgt_info in batch]
