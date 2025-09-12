@@ -34,10 +34,6 @@ from train.optimize import group_student_params, IncrementalThawScheduler
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-# The training script can recovery from the occasional CUDA OOM error by clearing the cache and moving on to the next training iteration. 
-# This variable determines how many times it is caught before termination of the script.
-MAX_OOM_ERROR_CATCHES = 10
-
 ###############
 ### Logging ###
 ###############
@@ -64,17 +60,50 @@ logfile_handler.setFormatter(log_formatter)
 ### Utility ###
 ###############
 
-def print_memory_usage(meta_info: str):
-  return
-  """Print detailed memory usage of GPU"""
-  print(f"\nMemory usage logging: {meta_info}")
-  print("Allocated memory:", torch.cuda.memory_allocated() / 1e9, "GB")
-  print("Max allocated memory:", torch.cuda.max_memory_allocated() / 1e9, "GB")
-  print("Cached memory:", torch.cuda.memory_reserved() / 1e9, "GB")
-  print("Max cached memory:", torch.cuda.max_memory_reserved() / 1e9, "GB")
-
+class OOMHandler:
+  """
+  Context manager to catch CUDA OOM errors, clear the cache and continue execution.
+  """
+  def __init__(self, model, max_catches=20):
+    self.max_catches = max_catches
+    self.remaining_catches = max_catches
+    self.model = model
+    self.oom_occurred = False
+    
+  def __enter__(self):
+    self.oom_occurred = False
+    return self
+  
+  def __exit__(self, exc_type, exc_value, traceback):
+    if exc_type is not None and issubclass(exc_type, torch.cuda.OutOfMemoryError):
+      if self.remaining_catches <= 0:
+        return False
+      
+      self.oom_occurred = True
+      self.remaining_catches -= 1
+      
+      self._handle_oom(exc_value)
+      return True
+      
+    return False
+      
+  def _handle_oom(self, exc_value):
+    err_msg = f"CUDA out of memory (catch #{self.max_catches - self.remaining_catches}/{self.max_catches}): {str(exc_value)}\n" \
+               "Clearing CUDA cache and continuing"
+    print(f"[ERROR] {err_msg}")
+    logger.error(err_msg)
+    
+    self.model.zero_grad()
+    # Clear CUDA cache
+    torch.cuda.empty_cache()
+    torch.cuda.synchronize()
+    gc.collect()
+    
 
 class DummyManager:
+  """
+  Dummy manager class that does nothing. Used when logging is disabled.
+  """
   def __init__(self, *args, **kwargs):
     pass
   
@@ -371,6 +400,8 @@ def train_model(model: KenkuModel,
                 DAL_weight_decay: float = None,
                 scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None):
 
+  oom_handler = OOMHandler(model)
+
   DAL_weight_init = DAL_weight
   OAL_weight_init = OAL_weight
   
@@ -404,27 +435,12 @@ def train_model(model: KenkuModel,
       model.clear_paddings()
       print_memory_usage(f"Batch {batch_index}: BEFORE loss calc")
       
-      try:
+      with oom_handler:
         loss, A = model.calc_loss(*batch, main_loss_fn=main_loss_fn, loss_weights=loss_weights)
-      except torch.cuda.OutOfMemoryError as e:
-        if MAX_OOM_ERROR_CATCHES <= 0:
-          raise e
-        
-        err_msg = f"CUDA out of memory for training batch with shape {batch[0].shape}.\n" \
-                   "Clearing CUDA cache and continuing to next iteration"
-        print(f"[ERROR] {err_msg}")
-        logger.error(err_msg)
-        
-        model.zero_grad()
-        torch.cuda.empty_cache()
-        torch.cuda.synchronize()
-        gc.collect()
-        
-        MAX_OOM_ERROR_CATCHES -= 1
+      
+      # If an OOM error occurred, continue to the next iteration to prevent weight update.
+      if oom_handler.oom_occurred:
         continue
-        
-        
-      print_memory_usage(f"Batch {batch_index}: AFTER loss calc")
 
       model.zero_grad()
       loss.backward()
@@ -436,11 +452,8 @@ def train_model(model: KenkuModel,
 
       # Record training loss
       if batch_index % train_loss_interval == 0:
-        # print(f"Train loss: {np.mean(running_loss)}")
         tensorboard_manager.record_train_loss(np.mean(running_loss))
         running_loss = []
-        
-        # torch.cuda.empty_cache()
 
 
 ############
