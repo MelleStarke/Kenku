@@ -541,11 +541,13 @@ if __name__ == "__main__":
   # Sentence sample distribution
   if mode == 'distribution':
     factory = ParallelDatasetFactory(dataset_dir = "../Data/processed/VCTK")
-    dataset = factory.get_dataset()
+    dataset = factory.get_dataset(min_transcript_samples=0)
     # print(ds.class_dirs)
     # print([len(d) for d in ds.filenames])
     
-    
+    print(f"min: {min(sorted([len(d) for d in dataset.transcript_dict.values()]))} | max: {max(sorted([len(d) for d in dataset.transcript_dict.values()]))}")
+    print(f'n sentences: {len(sorted([len(d) for d in dataset.transcript_dict.values()]))}')
+    print(f'n samples: {sum(sorted([len(d) for d in dataset.transcript_dict.values()]))}')
     plt.bar(range(len(dataset.transcript_dict)), sorted([len(d) for d in dataset.transcript_dict.values()]))
     plt.ylabel("N sentence samples")
     plt.xlabel("sentence")
