@@ -173,9 +173,9 @@ if __name__ == "__main__":
 
     opt = torch.optim.Adam(param_groups, lr=0.001)
     
-    total_steps = 400
-    warmup_steps = 0.15
-    thawing_steps = 0.5
+    total_steps = 1000
+    warmup_steps = 0.1
+    thawing_steps = 0.4
     scheduler = IncrementalThawScheduler(opt, total_steps=total_steps, warmup_steps=warmup_steps, thawing_steps=thawing_steps)
     
     group_lrs = [[] for _ in range(len(param_groups))]
@@ -188,18 +188,19 @@ if __name__ == "__main__":
         group_lrs[i].append(lr)
         
     import matplotlib.pyplot as plt
+    fig = plt.figure(figsize=(10, 7))
     for i, lrs in enumerate(group_lrs):
       plt.plot(lrs, label=f"{opt.param_groups[i]['name']}")
     plt.axvline(x=int(total_steps * warmup_steps) - 1, color='gray', linestyle='--')
     plt.axvline(x=int(total_steps * (warmup_steps + thawing_steps)) - 1, color='gray', linestyle='--')
     
-    plt.axvline(x=136, color='k', linestyle='-')
-    plt.axvline(x=173, color='k', linestyle='-')
+    # plt.axvline(x=int(total_steps * 0.3893936584461339), color='k', linestyle='-')
     
-    plt.xlabel('Step')
+    plt.xlabel('Training Step')
     plt.ylabel('Learning Rate')
-    plt.title('Learning Rate Schedule with Incremental Thawing')
+    plt.title('Learning Rate Schedule with Incremental Thawing (Base Learning Rate = 0.001)')
     plt.legend()
     plt.grid()
-    plt.show()
+    fig.savefig('./train/plots/thawing_example.pdf')
+    # plt.show()
     

@@ -630,7 +630,7 @@ if __name__ == '__main__':
     'warp',
     'power',
     'student'
-  ][3]
+  ][0]
   # rc = RandomClip(10, 0.45)
   
   rtw = RandomStretchedTimeWarp() 
@@ -653,7 +653,7 @@ if __name__ == '__main__':
   
   if mode == 'clip':
     from network import append_zero_frame, prepend_zero_frame
-    arc = AlignedRandomClip()
+    arc = AlignedRandomClip(max_clip_ratio=0.3, keep_aligned=False)
     
     for i in range(10):
       # src stuff
@@ -674,13 +674,13 @@ if __name__ == '__main__':
       
       src_clip, tgt_clip, src_start, tgt_start = arc(src_mel, tgt_mel)
       
-      fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+      fig, axes = plt.subplots(2, 2, figsize=(15, 5))
       
       # Display original spectrograms
       for j, (name, mel) in enumerate(zip(['source', 'target'], [src_mel, tgt_mel])):
         im = axes[0,j].imshow(mel, aspect='auto', origin='lower')
         axes[0,j].set_title(f"Original {name}")
-        fig.colorbar(im, ax=axes[0,j], fraction=0.046, pad=0.04)
+        # fig.colorbar(im, ax=axes[0,j], fraction=0.046, pad=0.04)
       
       # Display clipped spectrograms with correct alignment
       for j, (name, mel, clipped_mel, start_idx) in enumerate(zip(['source', 'target'], [src_mel, tgt_mel], [src_clip, tgt_clip], [src_start, tgt_start])):
@@ -698,20 +698,21 @@ if __name__ == '__main__':
         
         # Plot with the same extent as the original to align x-axis
         im = axes[1,j].imshow(masked_clip, aspect='auto', origin='lower')
-        axes[1,j].set_title(f"Clipped {name} (aligned)")
+        axes[1,j].set_title(f"Clipped {name}")
         
         # Add vertical lines to show clip boundaries
-        axes[1,j].axvline(x=start_idx, color='r', linestyle='--', alpha=0.7)
-        axes[1,j].axvline(x=end_idx-1, color='r', linestyle='--', alpha=0.7)
+        axes[1,j].axvline(x=start_idx, color='w', linestyle='--', alpha=1)
+        axes[1,j].axvline(x=end_idx-1, color='w', linestyle='--', alpha=1)
         
         # Also show clip boundaries on original for reference
-        axes[0,j].axvline(x=start_idx, color='r', linestyle='--', alpha=0.7)
-        axes[0,j].axvline(x=end_idx-1, color='r', linestyle='--', alpha=0.7)
+        axes[0,j].axvline(x=start_idx, color='w', linestyle='--', alpha=1)
+        axes[0,j].axvline(x=end_idx-1, color='w', linestyle='--', alpha=1)
         
-        fig.colorbar(im, ax=axes[1,j], fraction=0.046, pad=0.04)
+        # fig.colorbar(im, ax=axes[1,j], fraction=0.046, pad=0.04)
       
       plt.tight_layout()
-      plt.show()
+      fig.savefig(f"./data/logs/imgs/arc/arc_example_{i}.pdf", dpi=300)
+      # plt.show()
         
     
   if mode == 'warp':
@@ -724,23 +725,40 @@ if __name__ == '__main__':
       src_mel = src_mels[i,...,:max_mask_idx]
       n_frames = src_mel.shape[-1]
       
-      fig, axes = plt.subplots(3, 1)
-      axes[0].imshow(src_mel, aspect='auto')
-      axes[0].set_title("Source")
+      # Create figure with GridSpec to control width ratios
+      fig = plt.figure(figsize=(15, 5))
+      gs = fig.add_gridspec(2, 2, width_ratios=[2, 1])  # Left side twice as wide
       
-      warped_mel = rtw(src_mel, ax=axes[2])
-      axes[1].imshow(warped_mel, aspect='auto')
-      axes[1].set_title("Warped")
+      # Create subplots
+      ax0 = plt.subplot(gs[0, 0])  # Top-left (wide rectangle)
+      ax1 = plt.subplot(gs[1, 0])  # Bottom-left (wide rectangle)  
+      ax2 = plt.subplot(gs[:, 1])  # Right side (square, spanning both rows)
+      
+      ax0.imshow(src_mel, aspect='auto')
+      ax0.set_title("Original Spectrogram")
+      ax0.set_xlabel("Frame")
+      ax0.set_ylabel("Power")  
+      
+      warped_mel = rtw(src_mel, ax=ax2)
+      ax1.imshow(warped_mel, aspect='auto')
+      ax1.set_title("Warped Spectrogram")
+      ax1.set_xlabel("Frame")
+      ax1.set_ylabel("Power")  
       
       max_x_val = max(src_mel.shape[-1], warped_mel.shape[-1])
-      for ax in axes:
+      for ax in [ax0, ax1, ax2]:
         ax.set_xlim(0, max_x_val - 1)
-        
-      axes[2].set_xlabel("Warped index")
-      axes[2].set_ylabel("Source index")  
+      
+      
+      ax2.set_ylim(0, max_x_val - 1)
+      ax2.grid(which='both')
+      ax2.set_xlabel("Warped frame")
+      ax2.set_ylabel("Original frame")  
         
       print(f" src min/max: {src_mel.min():.4}, {src_mel.max():.4}\n" f"warp min/max: {warped_mel.min():.4}, {warped_mel.max():.4}")
-      plt.show()
+      plt.tight_layout()
+      fig.savefig(f"./data/logs/imgs/rtw/rtw_example_{i}.pdf", dpi=300)
+      # plt.show()
       
   if mode == 'power':
     rpw = RandomPowerWarp(min_mag=0.1)
