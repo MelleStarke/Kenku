@@ -127,7 +127,7 @@ def compose_random_sines(max_period: int,
   
   def inner(frames):
     sine_waves = [
-      amplitude[i] * np.sin(frequency[i] * frames + phase[i])
+      amplitude[i] * np.sin(frequency[i] * (frames - phase[i]))
       for i in range(n_sines)
     ]
     composite = np.sum(sine_waves, axis=0)
