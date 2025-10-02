@@ -487,6 +487,8 @@ def main():
   
   parser.add_argument('--model-class', '-m', type=str, default='KenkuTeacher', metavar='STR',
                       help='Class of the model you wish to train: KenkuTeacher or KenkuStudent.')
+  parser.add_argument('--drl', action='store_true',
+                      help='Enable Disentangled Representation Learning.')
   parser.add_argument('--from-teacher', type=str, default=None, metavar='STR',
                       help='Path to teacher checkpoint from which to create the student model.')
   parser.add_argument('--in-ch', type=int, default=80, metavar='INT',
@@ -583,7 +585,7 @@ def main():
   dataset_config = create_config_dict(args_dict, dataset_config_keys, args.dataset_config_path)
   
   # Model Config
-  model_config_keys = ['model_class', 'from_teacher', 'in_ch', 'conv_ch', 'att_ch', 'out_ch', 
+  model_config_keys = ['model_class', 'drl', 'from_teacher', 'in_ch', 'conv_ch', 'att_ch', 'out_ch', 
                        'embed_ch', 'num_accents', 'stack_factor', 'dropout_rate']
   model_config = create_config_dict(args_dict, model_config_keys, args.model_config_path)
   
@@ -601,18 +603,27 @@ def main():
   #=== Initialize Model ===#
 
   model_class = model_config['model_class'].lower().replace(' ', '')
+  use_drl = model_config['drl']
   
   if model_class in ['kenkuteacher', 'teacher', 'teach', 'tea']:
-    model = KenkuTeacher
+    if use_drl:
+      model = DRLKenkuTeacher
+    else: 
+      model = KenkuTeacher
     is_student = False
+    
   elif model_class in ['kenkustudent', 'student', 'stud', 'stu']:
-    model = KenkuStudent
+    if use_drl:
+      model = DRLKenkuStudent
+    else:
+      model = KenkuStudent
     is_student = True
+    
   else:
     raise ValueError('Incorrect model class. Use `KenkuTeacher` or `KenkuStudent`.')
   
   model_init_args = model_config.copy()
-  for remove_key in ['model_class', 'from_teacher']:
+  for remove_key in ['model_class', 'drl', 'from_teacher']:
     model_init_args.pop(remove_key)
     
   model = model(**model_init_args)

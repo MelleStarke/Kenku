@@ -242,21 +242,21 @@ class KenkuTeacher(KenkuModel):
     ):
     super(KenkuTeacher, self).__init__(
       in_ch, conv_ch, att_ch, out_ch, embed_ch, num_accents,              
-      num_conv_layers = num_conv_layers,
-      kernel_size     = kernel_size,
-      dilations       = dilations,
-      dropout_rate    = dropout_rate,
-      stack_factor    = stack_factor
+      num_conv_layers      = num_conv_layers,
+      kernel_size          = kernel_size,
+      dilations            = dilations,
+      dropout_rate         = dropout_rate,
+      stack_factor         = stack_factor
     )
     kame_block_kwargs = {
     }
     self.init_args = (in_ch, conv_ch, att_ch, out_ch, embed_ch, num_accents)
     self.init_kwargs = {
-      'num_conv_layers': num_conv_layers,
-      'kernel_size'    : kernel_size,
-      'dilations'      : dilations,
-      'dropout_rate'   : dropout_rate,
-      'stack_factor'   : stack_factor
+      'num_conv_layers'     : num_conv_layers,
+      'kernel_size'         : kernel_size,
+      'dilations'           : dilations,
+      'dropout_rate'        : dropout_rate,
+      'stack_factor'        : stack_factor
     }
     
   def forward(self, src_mel, tgt_mel, src_info, tgt_info, stack=True):
@@ -372,20 +372,20 @@ class KenkuStudent(KenkuModel):
     
     super(KenkuStudent, self).__init__(
       in_ch, conv_ch, att_ch, out_ch, embed_ch, num_accents,              
-      num_conv_layers = num_conv_layers,
-      kernel_size     = kernel_size,
-      dilations       = dilations,
-      dropout_rate    = dropout_rate,
-      stack_factor    = stack_factor
+      num_conv_layers      = num_conv_layers,
+      kernel_size          = kernel_size,
+      dilations            = dilations,
+      dropout_rate         = dropout_rate,
+      stack_factor         = stack_factor
     )
     
     self.attention_predictor = AttentionPredictor(
       in_ch * stack_factor, conv_ch, embed_ch, num_accents,
-      num_conv_layers = num_conv_layers,
-      kernel_size     = kernel_size,
-      dilations       = dilations,
-      dropout_rate    = dropout_rate,
-      rng             = rng
+      num_conv_layers      = num_conv_layers,
+      kernel_size          = kernel_size,
+      dilations            = dilations,
+      dropout_rate         = dropout_rate,
+      rng                  = rng
     )
     
   def forward(self, src_mel, src_info, tgt_info, stack = True):   
@@ -509,6 +509,9 @@ class KenkuStudent(KenkuModel):
     super(KenkuStudent, self).clear_paddings()
     self.attention_predictor.encoder.clear_paddings()
 
+##################
+### DRL Models ###
+##################
 
 class DRLKenkuTeacher(KenkuTeacher):
   def __init__(self,
@@ -519,26 +522,97 @@ class DRLKenkuTeacher(KenkuTeacher):
                embed_ch: int,
                num_accents: int,
                num_conv_layers: Optional[int] = 8,
+               num_si_conv_layers: Optional[int] = 6,
                kernel_size: Optional[int] = 5,
                dilations: Optional[List[int]] = None,
                dropout_rate: Optional[float] = 0.2,
                stack_factor: int = 4):
+    
     super(DRLKenkuTeacher, self).__init__(
       in_ch, conv_ch, att_ch, out_ch, embed_ch, num_accents,              
-      num_conv_layers = num_conv_layers,
-      kernel_size     = kernel_size,
-      dilations       = dilations,
-      dropout_rate    = dropout_rate,
-      stack_factor    = stack_factor
+      num_conv_layers      = num_conv_layers,
+      kernel_size          = kernel_size,
+      dilations            = dilations,
+      dropout_rate         = dropout_rate,
+      stack_factor         = stack_factor
     )
     
     self.speaker_info_encoder = SpeakerInfoEncoder(
-      in_ch * sf, conv_ch, embed_ch,
-      num_conv_layers = num_conv_layers,
+      in_ch * stack_factor, conv_ch, embed_ch,
+      num_conv_layers = num_si_conv_layers,
       kernel_size     = kernel_size,
       dilations       = dilations,
       dropout_rate    = dropout_rate
     )
+    
+    self.propegate_speaker_info_encoder(self.speaker_info_encoder)
+    
+  def to_student(self, student_kwargs=None):
+    student_kwargs = {} if student_kwargs is None else student_kwargs
+    student = DRLKenkuStudent(*self.init_args, 
+                              **{**self.init_kwargs, **student_kwargs})
+    
+    student.load_teacher_state_dict(self.state_dict())
+    
+    return student
+    
+class DRLKenkuStudent(KenkuStudent):
+  def __init__(self,
+               in_ch: int,
+               conv_ch: int,
+               att_ch: int,
+               out_ch: int,
+               embed_ch: int,
+               num_accents: int,
+               num_conv_layers: Optional[int] = 8,
+               num_si_conv_layers: Optional[int] = 6,
+               kernel_size: Optional[int] = 5,
+               dilations: Optional[List[int]] = None,
+               dropout_rate: Optional[float] = 0.2,
+               stack_factor: int = 4,
+               speaker_info_encoder = None,
+               rng: Union[torch.Generator, int] = None):
+    
+    super(DRLKenkuStudent, self).__init__(
+      in_ch, conv_ch, att_ch, out_ch, embed_ch, num_accents,              
+      num_conv_layers      = num_conv_layers,
+      kernel_size          = kernel_size,
+      dilations            = dilations,
+      dropout_rate         = dropout_rate,
+      stack_factor         = stack_factor
+    )
+    
+    self.speaker_info_encoder = SpeakerInfoEncoder(
+      in_ch * stack_factor, conv_ch, embed_ch,
+      num_conv_layers = num_si_conv_layers,
+      kernel_size     = kernel_size,
+      dilations       = dilations,
+      dropout_rate    = dropout_rate
+    )
+    
+    
+  def load_teacher_state_dict(self, tea_dict: dict):
+    stu_dict = self.state_dict()
+    
+    tea_keys = list(tea_dict.keys())
+    
+    # Construct state dict from student state dict keys.
+    # Module weights are copied from the teacher if available,
+    # and copied from the student if not available.
+    state_dict = dict([(sk, tea_dict[sk]) if sk in tea_keys else (sk, stu_dict[sk])
+                       for sk in stu_dict.keys()])
+    
+    self.load_state_dict(state_dict)
+    
+    # # Freeze copied weights.
+    # for name, param in self.named_parameters():
+    #   if name in tea_keys:
+    #     param.requires_grad = False
+    
+    # Freeze only the target encoder weights
+    for param in self.tgt_encoder.parameters():
+      param.requires_grad = False
+      
 
 if __name__ == "__main__":
   
@@ -573,7 +647,7 @@ if __name__ == "__main__":
     model = model.to_student()
     
     src_mel, tgt_mel, src_mask, tgt_mask, src_info, tgt_info = next(iter(loader))
-    loss = model.calc_loss(src_mel, tgt_mel, src_info, tgt_info)
+    loss = model.calc_loss(src_mel, tgt_mel, src_mask, tgt_mask, src_info, tgt_info)
     print(loss)
     # loss = model.calc_loss(*batch, stack_factor=sf)
   

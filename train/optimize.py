@@ -8,7 +8,9 @@ from typing_extensions import override
 
 from network import KenkuStudent
 
-def group_student_params(student_model: KenkuStudent, num_conv_layers: int = 8, format_for_optimizer=False):
+def group_student_params(student_model: KenkuStudent, 
+                         max_groups: Optional[int] = None,
+                         format_for_optimizer=False):
   """
   Groups the parameters trnsfered from the teacher model into groups,
   from closest to the output layer to the furthest.
@@ -19,32 +21,55 @@ def group_student_params(student_model: KenkuStudent, num_conv_layers: int = 8, 
       num_conv_layers (int): Number of convolutional layers in each KameBlock. Default is 8.
       format_for_optimizer (bool): If True, returns the parameter groups in a format suitable for passing to an optimizer.
                                    Each group is a dict with 'params' and 'name' keys. Default is False.
+      max_groups (int, optional): Maximum number of thawing groups to consider. If None, all groups in the optimizer are used.
+                                  Otherwise, only the latest `max_groups` layers are used, ignoring the earlier layers.
   
   Returns:
       thawing_groups (List[(str, Parameter)]): A list of parameter groups to be thawed incrementally.
-      static_group (List[(str, Parameter)]): A list of parameters that remain frozen throughout training.
+      frozen_group (List[(str, Parameter)]): A list of parameters that remain frozen throughout training.
       untrained_group (List[(str, Parameter)]): A list of parameters that were not transfered and are trained from scratch.
   """
   
+  uses_drl = hasattr(student_model, 'speaker_info_encoder') and student_model.speaker_info_encoder is not None
+  
   def group_kameblock_params(kameblock, prefix):
     name_starts = [f'{prefix}.out_layer']
-    for i in range(num_conv_layers):
+    num_conv_layers = len(kameblock.conv_blocks)
+    for i in range(num_conv_layers)[::-1]:
         name_starts.append(f'{prefix}.conv_blocks.{num_conv_layers - 1 - i}')
       
-    name_starts += [f'{prefix}.in_layer', f'{prefix}.embed_layer']
+    name_starts.append(f'{prefix}.in_layer')
+    if not uses_drl:
+      name_starts.append(f'{prefix}.embed_layer')
+      
     return name_starts
     
-  thawing_group_name_starts = group_kameblock_params(student_model, 'decoder') + \
-                                group_kameblock_params(student_model, 'src_encoder')
+  # Group the parameters by the module they belong to (via their name prefix)
+  thawing_group_name_starts = group_kameblock_params(student_model.decoder, 'decoder') + \
+                                group_kameblock_params(student_model.src_encoder, 'src_encoder')
+  
+  if uses_drl:
+    thawing_group_name_starts = group_kameblock_params(student_model.speaker_info_encoder, 'speaker_info_encoder') + thawing_group_name_starts
+                                
+  if max_groups is not None:
+    # Freeze the earlier weights so they end up in the frozen group
+    frozen_group_name_starts = thawing_group_name_starts[max_groups:]
+    for name, param in student_model.named_parameters():
+      if any(name.startswith(start) for start in frozen_group_name_starts):
+        param.requires_grad = False
+          
+    # Only keep the last `max_groups` groups for thawing
+    thawing_group_name_starts = thawing_group_name_starts[:max_groups]
   
   thawing_groups = [[] for _ in range(len(thawing_group_name_starts))]
-  static_group = []
+  frozen_group = []
   untrained_group = []
+  # Group all parameters
   for name, param in student_model.named_parameters():
     if not param.requires_grad:
-        static_group.append(param)
-        continue
-    
+      frozen_group.append(param)
+      continue
+  
     for i, start in enumerate(thawing_group_name_starts):
       if name.startswith(start):
         thawing_groups[i].append(param)
@@ -66,7 +91,7 @@ def group_student_params(student_model: KenkuStudent, num_conv_layers: int = 8, 
                        thawing_group_name_starts + ['<untrained>'])]
     return param_groups
 
-  return thawing_groups, static_group, untrained_group
+  return thawing_groups, frozen_group, untrained_group
     
 class IncrementalThawScheduler(LambdaLR):
   
@@ -158,14 +183,14 @@ class IncrementalThawScheduler(LambdaLR):
 
     
 if __name__ == "__main__":
-    from network import KenkuTeacher
+    from network import KenkuTeacher, DRLKenkuTeacher, DRLKenkuStudent
     ch = 32
-    model = KenkuTeacher(ch, ch, ch, ch, 12, 11)
+    model = DRLKenkuTeacher(ch, ch, ch, ch, 12, 11)
     
     model = model.to_student({})
     
     # thawing_groups, static_group, untrained_group = group_student_params(model)
-    param_groups = group_student_params(model, format_for_optimizer=True)
+    param_groups = group_student_params(model, max_groups=21, format_for_optimizer=True)
     
     # all_names = sorted(np.ravel([[g[0] for g in group] for group in thawing_groups]).tolist() + [g[0] for g in static_group] + [g[0] for g in untrained_group])
     # model_param_names = sorted([name for name, param in model.named_parameters()])
@@ -202,5 +227,8 @@ if __name__ == "__main__":
     plt.legend()
     plt.grid()
     fig.savefig('./train/plots/thawing_example.pdf')
-    # plt.show()
+    plt.show()
     
+    
+    for name, param in model.named_parameters():
+      print(f"{name}: requires_grad={param.requires_grad}")
