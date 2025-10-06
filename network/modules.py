@@ -57,46 +57,45 @@ class KenkuModule(nn.Module):
     super(KenkuModule, self).__init__()
     self.inference = False
     
-  def propegate_speaker_info_encoder(self, speaker_info_encoder):
+  def attach_speaker_info_encoder(self, speaker_info_encoder):
     """
-    Propegates a SpeakerInfoEncoder module to all submodules that have an embed_layer attribute.
+    Attaches the SpeakerInfoEncoder instance to all DRLKameEmbedding instances in the module tree.
     Doing this post-init is an ugly solution but necessary due to torch module initialization order.
     Args:
         speaker_info_encoder (SpeakerInfoEncoder): Speaker info prediction module to replace the embedding layer by.
     """
     for module in self.children():
-      if hasattr(module, 'embed_layer'):
-        n_channels = module.embed_layer.layer.out_features
-        device = module.embed_layer.layer.weight.device
-        # Delete the old embed layer from the graph
-        setattr(module, 'embed_layer', DRLKameEmbedding(speaker_info_encoder, n_channels, device=device))
-        logger.info(f"Propegated SpeakerInfoEncoder to {module}.")
       if isinstance(module, KenkuModule):
-        module.propegate_speaker_info_encoder(speaker_info_encoder)
+        module.attach_speaker_info_encoder(speaker_info_encoder)
     
-  def train(self, *args, **kwargs):
+  def train(self, *args, called_super=False, **kwargs):
+    if not called_super:
+      super().train(*args, **kwargs)
     self.inference = False
     
     for module in self.children():
       module.training = True
       if isinstance(module, KenkuModule):
-        module.inference = False
+        module.train(*args, **kwargs, called_super=True)
     
-  def eval(self, *args, **kwargs):
+  def eval(self, *args, called_super=False, **kwargs):
+    if not called_super:
+      super().eval(*args, **kwargs)
+      
     self.inference = False
     
     for module in self.children():
-      module.training = False
       if isinstance(module, KenkuModule):
-        module.inference = False
+        module.eval(*args, **kwargs, called_super=True)
   
-  def infer(self, *args, **kwargs):
+  def infer(self, *args, called_super=False, **kwargs):
+    if not called_super:
+      super().eval(*args, **kwargs)
     self.inference = True
     
     for module in self.children():
-      module.training = False
       if isinstance(module, KenkuModule):
-        module.inference = True
+        module.infer(*args, **kwargs, called_super=True)
 
 ##################
 ### Embeddings ###
@@ -221,11 +220,18 @@ class SpeakerInfoEncoder(KenkuModule):
     return Y
   
 class DRLKameEmbedding(KenkuModule):
-  def __init__(self, speaker_info_encoder: SpeakerInfoEncoder, n_channels, device=device):
+  def __init__(self, n_accents: int, n_channels: int, device=device):
     super(DRLKameEmbedding, self).__init__()
 
-    self.encoder = speaker_info_encoder
-    self.lin_layer = weight_norm(nn.Linear(self.encoder.out_layer.out_channels, n_channels)).to(device)
+    self.encoder = None
+    self.lin_layer = weight_norm(nn.Linear(n_accents + 2, n_channels)).to(device)
+  
+  def attach_speaker_info_encoder(self, speaker_info_encoder: SpeakerInfoEncoder):
+    assert isinstance(speaker_info_encoder, SpeakerInfoEncoder), f"Expected a SpeakerInfoEncoder instance. Got {type(speaker_info_encoder)}."
+    assert speaker_info_encoder.out_layer.out_channels == self.lin_layer.in_features + 2, \
+      f"SpeakerInfoEncoder output channels ({speaker_info_encoder.out_layer.out_channels}) do not match expected input channels ({self.lin_layer.in_features + 2})."
+    
+    object.__setattr__(self, 'encoder', speaker_info_encoder)
   
   def forward(self, sie_spectrogram: Tensor, sie_mask: Tensor):
     sie_embedding = self.encoder(sie_spectrogram, sie_mask).squeeze(-1)  # Remove empty time dim
@@ -247,7 +253,8 @@ class KameBlock(KenkuModule):
                num_output_streams: Optional[int] = 1,
                signal_segment_len: int = 80,
                dilations: Optional[List[int]] = None,
-               dropout_rate: Optional[float] = 0.2
+               dropout_rate: Optional[float] = 0.2,
+               use_drl: Optional[bool] = False,
     ):
     """Class for recurring structure in FastConvS2S-VC model. Based on Kameoka et al.'s model.
        Features:
@@ -289,7 +296,10 @@ class KameBlock(KenkuModule):
     # self.embed_layer = nn.Embedding(num_accents, embed_ch).to(device)  # Embedding of class values into class feature space.
     #                                                                    # TODO: original src code has weight norm commented out. Give a try?
     
-    self.embed_layer = KameEmbedding(num_accents, embed_ch)
+    if use_drl:
+      self.embed_layer = DRLKameEmbedding(num_accents, embed_ch, device=device)
+    else:
+      self.embed_layer = KameEmbedding(num_accents, embed_ch)
     
     # Use 1D Conv layer as linear layer to match up shapes better.
     self.in_layer = weight_norm(nn.Conv1d(in_channels  = in_ch + embed_ch,
@@ -311,7 +321,20 @@ class KameBlock(KenkuModule):
                                            padding      = 0,
                                            device       = device))
   
-  def forward(self, X: Tensor, speaker_info: Tuple[List[int], List[str], List[str]], sie_input: Tuple[Tensor, Tensor] = None):
+  def forward(self, X: Tensor, embedding_input: Union[Tuple[List[int], List[str], List[str]], Tuple[Tensor, Tensor]]):
+    """
+    Args:
+      X (Tensor): Input tensor of shape (batch_size, in_ch, timesteps)
+      embedding_input (Union[Tuple[List[int], List[str], List[str]], Tuple[Tensor, Tensor]]):
+          Input for the embedding layer. Either a tuple of lists of true labels, or a batch of
+          spectrograms and masks for the SpeakerInfoEncoder.
+          
+    Returns:
+      Y (Tensor) or Tuple[Tensor]: Output tensor of shape (batch_size, out_ch, timesteps)
+                                  or a tuple of tensors if num_output_streams > 1.
+    """
+    
+    
     batch_size, in_ch, timesteps = X.shape
     
     # Automatically warn and clear dynamic paddings if the batch sizes don't line up
@@ -323,15 +346,19 @@ class KameBlock(KenkuModule):
         logger.warning(f"Input batch size ({input_batch_size}) doesn't match padding batch size ({padding_batch_size}). Clearing paddings.")
         self.clear_paddings()
     
+    # === Get Embedding ===#
+    # If we don't use DRL and have access to the true labels
     if isinstance(self.embed_layer, KameEmbedding):
-      age, gender, accent = speaker_info
+      age, gender, accent = embedding_input
       embedding = self.embed_layer(age, gender, accent).unsqueeze(-1).repeat(1, 1, timesteps)
     
+    # If we use DRL and need to infer the labels from a spectrogram
     elif isinstance(self.embed_layer, SpeakerInfoEncoder):
-      if sie_input is None:
-        raise ValueError("When using a SpeakerInfoEncoder as the embedding layer, you must provide a tuple of spectrogram and mask as `sie_input`.")
-      sie_spectrogram, sie_mask = sie_input
+      sie_spectrogram, sie_mask = embedding_input
       embedding = self.embed_layer(sie_spectrogram, sie_mask).unsqueeze(-1).repeat(1, 1, timesteps)
+    
+    else:
+      raise ValueError(f"Unexpected type of embedding layer: {type(self.embed_layer)}.")
     
     #=== Forward Pass ===#
     X_    = self.dropout(X)
@@ -450,7 +477,8 @@ class AttentionPredictor(KenkuModule):
                signal_segment_len: int = 80,  # TODO: Currently unused
                dilations: Optional[List[int]] = None,
                dropout_rate: Optional[float] = 0.2,
-               rng: Union[torch.Generator, int] = None):
+               rng: Union[torch.Generator, int] = None,
+               use_drl: Optional[bool] = False,):
       super(AttentionPredictor, self).__init__()
       
       if rng is None:
@@ -469,7 +497,8 @@ class AttentionPredictor(KenkuModule):
                                num_output_streams   = 3,  # One for each Gaussian parameter
                                signal_segment_len   = signal_segment_len,
                                dilations            = dilations,
-                               dropout_rate         = dropout_rate
+                               dropout_rate         = dropout_rate,
+                               use_drl              = use_drl
                                )
       
       

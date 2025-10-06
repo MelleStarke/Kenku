@@ -36,7 +36,7 @@ def group_student_params(student_model: KenkuStudent,
     name_starts = [f'{prefix}.out_layer']
     num_conv_layers = len(kameblock.conv_blocks)
     for i in range(num_conv_layers)[::-1]:
-        name_starts.append(f'{prefix}.conv_blocks.{num_conv_layers - 1 - i}')
+        name_starts.append(f'{prefix}.conv_blocks.{i}')
       
     name_starts.append(f'{prefix}.in_layer')
     if not uses_drl:
@@ -232,3 +232,6 @@ if __name__ == "__main__":
     
     for name, param in model.named_parameters():
       print(f"{name}: requires_grad={param.requires_grad}")
+      
+    for name, module in model.named_modules():
+      print(f"{name}")

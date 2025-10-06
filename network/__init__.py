@@ -177,7 +177,8 @@ class KenkuModel(KenkuModule):
                kernel_size: Optional[int] = 5,
                dilations: Optional[List[int]] = None,
                dropout_rate: Optional[float] = 0.2,
-               stack_factor: int = 4
+               stack_factor: int = 4,
+               use_drl: Optional[bool] = False
     ):
     super(KenkuModel, self).__init__()
     
@@ -185,7 +186,8 @@ class KenkuModel(KenkuModule):
       'num_conv_layers': num_conv_layers,
       'kernel_size': kernel_size,
       'dilations': dilations,
-      'dropout_rate': dropout_rate
+      'dropout_rate': dropout_rate,
+      'use_drl': use_drl
     }
     
     self.stack_factor = stack_factor
@@ -238,7 +240,8 @@ class KenkuTeacher(KenkuModel):
                kernel_size: Optional[int] = 5,
                dilations: Optional[List[int]] = None,
                dropout_rate: Optional[float] = 0.2,
-               stack_factor: int = 4
+               stack_factor: int = 4,
+               use_drl: Optional[bool] = False
     ):
     super(KenkuTeacher, self).__init__(
       in_ch, conv_ch, att_ch, out_ch, embed_ch, num_accents,              
@@ -246,7 +249,8 @@ class KenkuTeacher(KenkuModel):
       kernel_size          = kernel_size,
       dilations            = dilations,
       dropout_rate         = dropout_rate,
-      stack_factor         = stack_factor
+      stack_factor         = stack_factor,
+      use_drl              = use_drl
     )
     kame_block_kwargs = {
     }
@@ -256,7 +260,8 @@ class KenkuTeacher(KenkuModel):
       'kernel_size'         : kernel_size,
       'dilations'           : dilations,
       'dropout_rate'        : dropout_rate,
-      'stack_factor'        : stack_factor
+      'stack_factor'        : stack_factor,
+      'use_drl'             : use_drl
     }
     
   def forward(self, src_mel, tgt_mel, src_info, tgt_info, stack=True):
@@ -368,6 +373,7 @@ class KenkuStudent(KenkuModel):
                dilations: Optional[List[int]] = None,
                dropout_rate: Optional[float] = 0.2,
                stack_factor: int = 4,
+               use_drl: Optional[bool] = False,
                rng: Union[torch.Generator, int] = None):
     
     super(KenkuStudent, self).__init__(
@@ -376,7 +382,8 @@ class KenkuStudent(KenkuModel):
       kernel_size          = kernel_size,
       dilations            = dilations,
       dropout_rate         = dropout_rate,
-      stack_factor         = stack_factor
+      stack_factor         = stack_factor,
+      use_drl              = use_drl
     )
     
     self.attention_predictor = AttentionPredictor(
@@ -385,7 +392,8 @@ class KenkuStudent(KenkuModel):
       kernel_size          = kernel_size,
       dilations            = dilations,
       dropout_rate         = dropout_rate,
-      rng                  = rng
+      rng                  = rng,
+      use_drl              = use_drl
     )
     
   def forward(self, src_mel, src_info, tgt_info, stack = True):   
@@ -534,18 +542,19 @@ class DRLKenkuTeacher(KenkuTeacher):
       kernel_size          = kernel_size,
       dilations            = dilations,
       dropout_rate         = dropout_rate,
-      stack_factor         = stack_factor
+      stack_factor         = stack_factor,
+      use_drl              = True
     )
     
     self.speaker_info_encoder = SpeakerInfoEncoder(
-      in_ch * stack_factor, conv_ch, embed_ch,
+      in_ch * stack_factor, conv_ch, num_accents + 4,
       num_conv_layers = num_si_conv_layers,
       kernel_size     = kernel_size,
       dilations       = dilations,
       dropout_rate    = dropout_rate
     )
     
-    self.propegate_speaker_info_encoder(self.speaker_info_encoder)
+    self.attach_speaker_info_encoder(self.speaker_info_encoder)
     
   def to_student(self, student_kwargs=None):
     student_kwargs = {} if student_kwargs is None else student_kwargs
@@ -571,6 +580,7 @@ class DRLKenkuStudent(KenkuStudent):
                dropout_rate: Optional[float] = 0.2,
                stack_factor: int = 4,
                speaker_info_encoder = None,
+               use_drl: Optional[bool] = True,
                rng: Union[torch.Generator, int] = None):
     
     super(DRLKenkuStudent, self).__init__(
@@ -579,16 +589,19 @@ class DRLKenkuStudent(KenkuStudent):
       kernel_size          = kernel_size,
       dilations            = dilations,
       dropout_rate         = dropout_rate,
-      stack_factor         = stack_factor
+      stack_factor         = stack_factor,
+      use_drl              = use_drl,
     )
     
     self.speaker_info_encoder = SpeakerInfoEncoder(
-      in_ch * stack_factor, conv_ch, embed_ch,
+      in_ch * stack_factor, conv_ch, num_accents + 4,
       num_conv_layers = num_si_conv_layers,
       kernel_size     = kernel_size,
       dilations       = dilations,
       dropout_rate    = dropout_rate
     )
+    
+    self.attach_speaker_info_encoder(self.speaker_info_encoder)
     
     
   def load_teacher_state_dict(self, tea_dict: dict):
