@@ -30,7 +30,7 @@ def group_student_params(student_model: KenkuStudent,
       untrained_group (List[(str, Parameter)]): A list of parameters that were not transfered and are trained from scratch.
   """
   
-  uses_drl = hasattr(student_model, 'speaker_info_encoder') and student_model.speaker_info_encoder is not None
+  uses_drl = hasattr(student_model, 'speaker_info_predictor') and student_model.speaker_info_predictor is not None
   
   def group_kameblock_params(kameblock, prefix):
     name_starts = [f'{prefix}.out_layer']
@@ -49,7 +49,7 @@ def group_student_params(student_model: KenkuStudent,
                                 group_kameblock_params(student_model.src_encoder, 'src_encoder')
   
   if uses_drl:
-    thawing_group_name_starts = group_kameblock_params(student_model.speaker_info_encoder, 'speaker_info_encoder') + thawing_group_name_starts
+    thawing_group_name_starts = group_kameblock_params(student_model.speaker_info_predictor, 'speaker_info_predictor') + thawing_group_name_starts
                                 
   if max_groups is not None:
     # Freeze the earlier weights so they end up in the frozen group

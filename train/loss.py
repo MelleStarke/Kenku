@@ -181,6 +181,14 @@ def ortho_att_loss(A: Tensor, src_mask: Tensor, tgt_sigma = 0.3):
 
 # (Code from https://github.com/clementchadebec/benchmark_VAE/blob/main/src/pythae/models/beta_tc_vae/beta_tc_vae_model.py)
 
+def log_gauss_density(z, mu, log_var):
+  """element-wise computation"""
+  return -0.5 * (
+      torch.log(torch.tensor([2 * np.pi]).to(z.device))
+      + log_var
+      + (z - mu) ** 2 * torch.exp(-log_var)
+  )
+
 def log_importance_weight_matrix(batch_size, dataset_size, device='cpu'):
   """
   Compute importance weigth matrix for Minibatch Stratified Sampling (MSS)
