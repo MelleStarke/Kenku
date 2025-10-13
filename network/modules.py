@@ -165,6 +165,9 @@ class SpeakerInfoPredictor(KenkuModule):
   ):
     super(SpeakerInfoPredictor, self).__init__()
     
+    # Keep track of the paddings each conv layer output. To be used during the next forward call.
+    self.paddings = [None] * num_conv_layers
+    
     if dilations is None:
       dilations = [3**(i%3) for i in range(num_conv_layers)]  # 1,3,9,1,3,9...
     
@@ -210,10 +213,13 @@ class SpeakerInfoPredictor(KenkuModule):
     X_ = self.in_layer(X_)
     
     # Pass through Conv GLU blocks.
-    for layer in self.conv_blocks:
+    for i, layer in enumerate(self.conv_blocks):
       empty_embedding = torch.empty((batch_size, 0, n_frames), device=device, dtype=dtype)
-      X_, _ = layer(X_, empty_embedding, padding=None)
+      X_, padding = layer(X_, empty_embedding, padding=self.paddings[i])
     
+      if self.inference:
+        self.paddings[i] = padding
+        
     X_pool = self.global_pool(X_, mask)
     
     Y = self.out_layer(X_pool).squeeze(-1) # Remove empty frame dim
@@ -230,6 +236,10 @@ class SpeakerInfoPredictor(KenkuModule):
     info[:,2:] = Y[:,4:]  # Copy any remaining dimensions as-is
     
     return info, z, mu, log_var  # Return latent factors, mean, and log-variance
+  
+  def clear_paddings(self):
+    self.paddings = [None] * len(self.conv_blocks)
+  
   
 class DRLKenkuEmbedding(KenkuModule):
   def __init__(self, n_accents: int, 
@@ -548,7 +558,7 @@ if __name__ == "__main__":
     'att pred',
     'encode embed',
     'masked pool'
-  ][3]
+  ][0]
   
   batch_size  = 4
   in_ch       = 5
@@ -676,7 +686,7 @@ if __name__ == "__main__":
     # Forward pass
     embeddings = model(x, mask)
     print(f"Input shape: {x.shape}")
-    print(f"Output shape: {embeddings.shape}")
+    print(f"Output shape: {embeddings[0].shape}")
     print(f"Embedding dimension: {embedding_dim}")
   # kb = KameBlock(in_ch, conv_ch, out_ch, embed_ch, num_accents)
   # X = torch.rand(batch_size, in_ch, timesteps, device=device)

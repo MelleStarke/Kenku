@@ -28,7 +28,14 @@ from data.load import ParallelDatasetFactory, ParallelMelspecDataset, augment_co
 from data.augment import get_augment_fns
 from data.util import save_config, load_config, config_to_str, recursive_to_device, recursive_map
 from network.modules import KameBlock
-from network import KenkuModel, KenkuTeacher, KenkuStudent, stack_frames, unstack_frames, append_zero_frame
+from network import (KenkuModel, 
+                     KenkuTeacher, 
+                     KenkuStudent, 
+                     DRLKenkuTeacher,
+                     DRLKenkuStudent,
+                     stack_frames, 
+                     unstack_frames, 
+                     append_zero_frame)
 from train.optimize import group_student_params, IncrementalThawScheduler
 
 
@@ -387,21 +394,24 @@ def train_model(model: KenkuModel,
                 checkpoint_manager: CheckpointManager, 
                 tensorboard_manager: TensorboardManager,
                 
+                use_drl: bool           = False,
                 main_loss_fn: str       = 'mse',
                 epochs: int             = 10,
                 train_loss_interval     = 100,
                 DAL_weight: float       = 0.,
                 OAL_weight: float       = 0.,
-                DAL_weight_decay: float = None,
+                att_weight_decay: float = None,
                 scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None):
 
   oom_handler = OOMHandler(model)
+  
+  dataset_size = len(train_loader.dataset)
 
   DAL_weight_init = DAL_weight
   OAL_weight_init = OAL_weight
   
-  if DAL_weight_decay is None:
-    DAL_weight_decay = 4 / epochs
+  if att_weight_decay is None:
+    att_weight_decay = 4 / epochs
     
   is_student = isinstance(model, KenkuStudent)
 
@@ -410,16 +420,23 @@ def train_model(model: KenkuModel,
   for epoch in range(epochs):
     print(f"\n#=== Epoch {epoch} ===#")
     # TODO: Maybe do this at the end of the epoch.
-    DAL_weight = DAL_weight_init * np.exp(-epoch * DAL_weight_decay)
-    OAL_weight = OAL_weight_init * np.exp(-epoch * DAL_weight_decay)
+    DAL_weight = DAL_weight_init * np.exp(-epoch * att_weight_decay)
+    OAL_weight = OAL_weight_init * np.exp(-epoch * att_weight_decay)
     
-    loss_weights = [DAL_weight, OAL_weight]
+    att_loss_weights = [DAL_weight, OAL_weight]
     if is_student:
-      loss_weights = [1, *loss_weights]
+      att_loss_weights = [1, *att_loss_weights]
 
     running_loss = []
 
     for batch_index, batch in tqdm(enumerate(train_loader), total=len(train_loader), mininterval=60., disable=False):
+      #=== Prepare Batch ===#
+      if use_drl:
+        # Remove the speaker info from the batch for DRL models, as they infer it from the spectrograms.
+        # Add dataset_size to estimate the beta-TCVAE terms.
+        batch = (*batch[:4], dataset_size)
+        
+      # Move all tensors in the batch to the correct device
       batch = recursive_to_device(batch, device)
       
       tensorboard_manager.inform(epoch, batch_index)
@@ -427,8 +444,9 @@ def train_model(model: KenkuModel,
 
       model.clear_paddings()
       
+      #=== Calculate Loss ===#
       with oom_handler:
-        loss, A = model.calc_loss(*batch, main_loss_fn=main_loss_fn, loss_weights=loss_weights)
+        loss, A = model.calc_loss(*batch, main_loss_fn=main_loss_fn, att_loss_weights=att_loss_weights)
       
       # If an OOM error occurred, continue to the next iteration to prevent weight update.
       if oom_handler.oom_occurred:
@@ -482,6 +500,7 @@ def main():
   parser.add_argument('--preload-melspecs', action='store_true',
                         help='Load all mel-spectrograms in RAM to avoid continuous file I/O.\n\n\n')                
   
+  
   parser.add_argument('--model-config-path', type=str, default="", metavar='STR',
                       help='Optional path to a model config file (.json). Used instead of parsed arguments.\n\n')
   
@@ -526,7 +545,7 @@ def main():
                       help='Starting value of the diagonal attention loss weight.')
   parser.add_argument('--OAL-weight', '-woa', type=float, default=2000., metavar='FLOAT',
                       help='Starting value of the orthogonal attention loss weight.')
-  parser.add_argument('--DAL-weight-decay', '-wdad', type=float, default=None, metavar='FLOAT',
+  parser.add_argument('--att-weight-decay', '-wad', type=float, default=None, metavar='FLOAT',
                       help='Decay rate for the diagonal attention loss weight. Defaults to 4 / epochs. ' 
                             'Decay steps are done through wda <- wda * exp(-epoch * wda_decay).')
   parser.add_argument('--test-interval', type=int, default=200, metavar='INT',
@@ -590,7 +609,7 @@ def main():
   model_config = create_config_dict(args_dict, model_config_keys, args.model_config_path)
   
   # Training Config
-  train_config_keys = ['epochs', 'main_loss', 'learning_rate', 'adam_betas', 'batch_size', 'DAL_weight', 'OAL_weight', 'DAL_weight_decay', 
+  train_config_keys = ['epochs', 'main_loss', 'learning_rate', 'adam_betas', 'batch_size', 'DAL_weight', 'OAL_weight', 'att_weight_decay', 
                        'test_interval', 'melspec_interval', 'max_test_batches', 'run_dir', 'checkpoint_interval', 
                        'checkpoint_max', 'from_checkpoint', 'no_log']
   train_config = create_config_dict(args_dict, train_config_keys, args.train_config_path)
@@ -800,11 +819,12 @@ def main():
               checkpoint_manager,
               tensorboard_manager,
               
+              use_drl          = use_drl,
               main_loss_fn     = train_config['main_loss'],
               epochs           = train_config['epochs'],
               DAL_weight       = train_config['DAL_weight'],
               OAL_weight       = train_config['OAL_weight'],
-              DAL_weight_decay = train_config['DAL_weight_decay'],
+              att_weight_decay = train_config['att_weight_decay'],
               scheduler        = thaw_scheduler if model_config['from_teacher'] else None
               )
 

@@ -84,7 +84,8 @@ def recursive_to_device(xs: Union[Tensor, List, Tuple], device: DeviceObjType):
     return xs_type([recursive_to_device(x, device) for x in xs])
   
   except (IndexError, TypeError) as e:
-    raise IndexError(f"Type {type(x)} isn't indexable.") from e
+    # Return as-is for empty containers, non-tensors, and non-containers
+    return xs
   
 def recursive_map(xs: Any, fn: Callable, cond = is_tensor):
   if cond(xs):

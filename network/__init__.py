@@ -10,9 +10,18 @@ from torch.nn.utils.parametrizations import weight_norm
 from typing import List, Tuple, Union, Optional
 from pathlib import Path
 
-from network.modules import KenkuModule, KameBlock, ScaledDotProductAttention, AttentionPredictor, SpeakerInfoPredictor
+from network.modules import (KenkuModule, 
+                             KameBlock, 
+                             ScaledDotProductAttention, 
+                             AttentionPredictor, 
+                             SpeakerInfoPredictor)
 
-from train.loss import mse_loss, mae_loss, auxil_att_loss, diag_att_loss, ortho_att_loss, beta_tcvae_loss
+from train.loss import (mse_loss, 
+                        mae_loss, 
+                        auxil_att_loss, 
+                        diag_att_loss, 
+                        ortho_att_loss, 
+                        beta_tcvae_loss_terms)
 
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -202,17 +211,26 @@ class KenkuModel(KenkuModule):
     self.decoder = KameBlock(
       att_ch, conv_ch, out_ch * sf, embed_ch, num_accents, **kame_block_kwargs
     )
+  
+  def stack_mels(self, *mels):
+    if self.stack_factor > 1:
+      mels = tuple(stack_frames(mel, self.stack_factor) for mel in mels)
+      if len(mels) == 1:
+        return mels[0]
+      return mels
+    return mels
+  
+  def stack_masks(self, *masks):
+    if self.stack_factor > 1:
+      masks = tuple(mask[:,:,::self.stack_factor] for mask in masks)
+      if len(masks) == 1:
+        return masks[0]
+      return masks
+    return masks
     
-  def encode_inputs(self, src_mel, tgt_mel, src_info, tgt_info, stack = True):
-    # future_KV = torch.jit.fork(self.src_encoder,     (X_src, k_src))
-    # future_Q  = torch.jit.fork(self.tgt_encoder, (X_tgt, k_tgt))
-
-    # K, V = torch.jit.wait(future_KV)
-    # Q    = torch.jit.wait(future_Q)
- 
+  def _encode_inputs(self, src_mel, tgt_mel, src_info, tgt_info, stack = True):
     if stack:
-      src_mel = stack_frames(src_mel, self.stack_factor)
-      tgt_mel = stack_frames(tgt_mel, self.stack_factor)
+      src_mel, tgt_mel = self.stack_mels(src_mel, tgt_mel)
     
     # Encoding step of forward pass
     K, V = self.src_encoder(src_mel, src_info)
@@ -220,6 +238,60 @@ class KenkuModel(KenkuModule):
     
     return K, V, Q
   
+  def _loss_input_preprocess(self, src_mel, tgt_mel, src_mask, tgt_mask, pos_weight=1.0):
+    #=== Position Encoding ===#
+    src_mel, tgt_mel = apply_position_encoding(src_mel, tgt_mel, pos_weight=pos_weight)
+    
+    #=== Frame Stacking ===#
+    src_mel, tgt_mel = self.stack_mels(src_mel, tgt_mel)
+    src_mask, tgt_mask = self.stack_masks(src_mask, tgt_mask)
+    
+    #=== Zero Frame Prepend ===#
+    # Prepend zero frame to target as a start-of-sequence token
+    tgt_mel = prepend_zero_frame(tgt_mel)
+    tgt_mask = prepend_zero_frame(tgt_mask)
+    
+    return src_mel, tgt_mel, src_mask, tgt_mask
+  
+  def _calc_main_loss(self, pred_mel, tgt_mel, tgt_mask, main_loss_fn):
+    try:
+      main_loss_fn = {
+        'mse': mse_loss,
+        'mae': mae_loss
+      }[main_loss_fn.lower()]
+      
+    except KeyError:
+      raise ValueError(f"Unknown main loss function '{main_loss_fn}'. Supported: 'mse', 'mae'.")
+    
+    main_loss = main_loss_fn(pred_mel, tgt_mel, tgt_mask)
+    
+    return main_loss
+  
+  def _calc_att_loss(self, A, src_mask, tgt_mask, 
+                     dal_tgt_sigma = 0.3,
+                     oal_tgt_sigma = 0.3,
+                     pred_means    = None,
+                     pred_vars     = None,
+                     true_A        = None):
+      
+      # Diagonal attention loss
+      da_loss = diag_att_loss(A, src_mask, tgt_mask, tgt_sigma = dal_tgt_sigma)
+      # Orthogonal attention loss
+      oa_loss = ortho_att_loss(A, src_mask, tgt_sigma = oal_tgt_sigma)
+      
+      # If the auxiliary attention loss inputs aren't passed,
+      # only return diagonal and orthogonal attention losses
+      if pred_means is pred_vars is true_A is None:
+        return da_loss, oa_loss
+      
+      if any(map(lambda x: x is None, [pred_means, pred_vars, true_A])):
+        raise ValueError("To calculate the auxiliary attention loss, all of pred_means, pred_vars, and true_A must be provided.")
+
+      # Auxiliary attention loss
+      aa_loss = auxil_att_loss(pred_means, pred_vars, true_A)
+      
+      return da_loss, oa_loss, aa_loss
+    
   def clear_paddings(self):
     self.src_encoder.clear_paddings()
     self.tgt_encoder.clear_paddings()
@@ -260,7 +332,7 @@ class KenkuTeacher(KenkuModel):
     }
     
   def forward(self, src_mel, tgt_mel, src_info, tgt_info, stack=True):
-    K, V, Q = self.encode_inputs(src_mel, tgt_mel, src_info, tgt_info, stack=stack)
+    K, V, Q = self._encode_inputs(src_mel, tgt_mel, src_info, tgt_info, stack=stack)
     
     R, A = self.attention(K, V, Q)
     Y = self.decoder(R, tgt_info)
@@ -284,72 +356,52 @@ class KenkuTeacher(KenkuModel):
                 pos_weight = 1.0, 
                 dal_tgt_sigma = 0.3, 
                 oal_tgt_sigma = 0.3, 
-                loss_weights = None,
+                att_loss_weights = None,
                 as_components = False):
     
-    # TODO: Authors feed source mel into forward without appending zero frame,
-    #       despite prepending target zero frame. This supposedly doesn't throw an error?
-    #       For now I'll just append zero frame to source so the shapes match up.
-    #       Edit: Made it work without appending zero frame to source
+    if att_loss_weights is not None:
+      assert len(att_loss_weights) == 2, f"Incorrect amount of attention loss weights. Expected 2, got {len(att_loss_weights)}."
     
-    #=== Position Encoding ===#
-    src_mel, tgt_mel = apply_position_encoding(src_mel, tgt_mel, pos_weight=pos_weight)
+    # Preprocess inputs by applying position encoding, frame stacking, and target zero-frame prepend
+    src_mel, tgt_mel, src_mask, tgt_mask = self._loss_input_preprocess(
+      src_mel, tgt_mel, src_mask, tgt_mask
+    )
     
-    #=== Frame Stacking ===#
-    sf = self.stack_factor
+    pred_mel, A = self.forward(src_mel, tgt_mel, src_info, tgt_info, stack=False)
     
-    # Stack frames along the mel-dimension, thereby reducing the frame-dimension.
-    if sf > 1:
-      src_mel  = stack_frames(src_mel, sf)
-      tgt_mel  = stack_frames(tgt_mel, sf)
-      
-      src_mask = src_mask[:,:,::sf]
-      tgt_mask = tgt_mask[:,:,::sf]
+    return self._calc_loss(pred_mel, tgt_mel, src_mask, tgt_mask, A,
+                           main_loss_fn = main_loss_fn,
+                           dal_tgt_sigma = dal_tgt_sigma,
+                           oal_tgt_sigma = oal_tgt_sigma,
+                           att_loss_weights = att_loss_weights,
+                           as_components = as_components)
+  
+  def _calc_loss(self, pred_mel, tgt_mel, src_mask, tgt_mask, A,
+                 main_loss_fn = 'mse', 
+                 dal_tgt_sigma = 0.3, 
+                 oal_tgt_sigma = 0.3, 
+                 att_loss_weights = None,
+                 as_components = False):
     
-    # Prepend zero frame to target as a start-of-sequence token
-    tgt_mel = prepend_zero_frame(tgt_mel)
-    tgt_mask = prepend_zero_frame(tgt_mask)
-    # src_mel = append_zero_frame(src_mel)
+    #=== Loss Terms ===#
+    main_loss = self._calc_main_loss(pred_mel, tgt_mel, tgt_mask, main_loss_fn)
+    da_loss, oa_loss = self._calc_att_loss(A, src_mask, tgt_mask, dal_tgt_sigma, oal_tgt_sigma)
     
-    batch_size, n_mels, n_frames = src_mel.shape
-    
-    #=== Forward Pass ===#
-    pred_mel, A = self(src_mel, tgt_mel, src_info, tgt_info, stack=False)
-    
-    # Main loss term
-    main_loss_fn = {
-      'mse': mse_loss,
-      'mae': mae_loss
-    }[main_loss_fn.lower()]
-    
-    # TODO: Intuition based fix, since tgt has a zero frame appended
-    #       and pred's frame dim is the same as tgt's
-    #       Edit: removed slicing. Used to be `pred_mel[...,1:], tgt_mel[...,:-1],`
-    main_loss = main_loss_fn(pred_mel, tgt_mel, tgt_mask)
-    
-    # Diagonal attention loss
-    da_loss = diag_att_loss(A, src_mask, tgt_mask, tgt_sigma = dal_tgt_sigma)
-    # Orthogonal attention loss
-    oa_loss = ortho_att_loss(A, src_mask, tgt_sigma = oal_tgt_sigma)
-    
+    #=== Combine Loss ===#
     # Return as components if requested
     if as_components:
-      # main_loss_lshift = main_loss_fn(pred_mel[...,:-1], tgt_mel[...,1:], tgt_mask[...,1:])
-      # main_loss_rshift = main_loss_fn(pred_mel[...,1:], tgt_mel[...,:-1], tgt_mask[...,:-1])
       return {'main loss': main_loss, 
               'da loss': da_loss, 
               'oa loss': oa_loss, 
-              # 'main loss lshift': main_loss_lshift, 
-              # 'main loss rshift': main_loss_rshift
               }, A
     
-    # Combine loss terms
-    if loss_weights is None:
-      loss_weights = [2000, 2000]
+    # Else, weigh and sum loss terms
+    if att_loss_weights is None:
+      att_loss_weights = [2000, 2000]
       
     total_loss = main_loss
     
-    for lw, loss_term in zip(loss_weights, [da_loss, oa_loss]):
+    for lw, loss_term in zip(att_loss_weights, [da_loss, oa_loss]):
       total_loss += lw * loss_term
       
     return total_loss, A
@@ -390,9 +442,9 @@ class KenkuStudent(KenkuModel):
     
   def forward(self, src_mel, src_info, tgt_info, stack = True):   
     if stack:
-      src_mel = stack_frames(src_mel, self.stack_factor)
+      src_mel = self.stack_mels(src_mel)
       
-    K, V = self.src_encoder(src_mel, src_info)
+    _, V = self.src_encoder(src_mel, src_info)
     pred_A, _, _ = self.attention_predictor(src_mel, tgt_info)
     
     R = V.matmul(pred_A)
@@ -430,73 +482,70 @@ class KenkuStudent(KenkuModel):
                 pos_weight = 1.0, 
                 dal_tgt_sigma = 0.3, 
                 oal_tgt_sigma = 0.3, 
-                loss_weights = None,
+                att_loss_weights = None,
                 as_components = False):
     
-    if loss_weights is not None:
-      assert len(loss_weights) == 3, f"Incorrect amount of loss weights. Expected 3, got {len(loss_weights)}."
+    if att_loss_weights is not None:
+      assert len(att_loss_weights) == 3, f"Incorrect amount of attention loss weights. Expected 3, got {len(att_loss_weights)}."
     
-    #=== Position Encoding ===#
-    src_mel, tgt_mel = apply_position_encoding(src_mel, tgt_mel, pos_weight=pos_weight)
+    # Preprocess inputs by applying position encoding, frame stacking, and target zero-frame prepend
+    src_mel, tgt_mel, src_mask, tgt_mask = self._loss_input_preprocess(
+      src_mel, tgt_mel, src_mask, tgt_mask
+    )
     
-    #=== Frame Stacking ===#
-    sf = self.stack_factor
-    
-    # Stack frames along the mel-dimension, thereby reducing the frame-dimension.
-    if sf > 1:
-      src_mel  = stack_frames(src_mel, sf)
-      tgt_mel  = stack_frames(tgt_mel, sf)
-      
-      src_mask = src_mask[:,:,::sf]
-      tgt_mask = tgt_mask[:,:,::sf]
-    
-    #=== Forward Pass ===#
-    
-    # Prepend zero frame as start-of-sequence token
-    tgt_mel = prepend_zero_frame(tgt_mel)
-    tgt_mask = prepend_zero_frame(tgt_mask)
-    
-    n_tgt_frames = tgt_mel.shape[-1]
-    K, V, Q = self.encode_inputs(src_mel, tgt_mel, src_info, tgt_info, stack = False)
+    #=== Forward Pass ==#
+    # Cannot call self.forward() due to needing to calculate the true attention matrix
+    K, V, Q = self._encode_inputs(src_mel, tgt_mel, src_info, tgt_info, stack = False)
     
     # Real attention matrix from the Teacher's encoders
     _, true_A = self.attention(K, V, Q)
     
     # TODO: prepend zero frame as start of sequence token?
     # Time-scaled sequence according to the attention predictor
+    n_tgt_frames = tgt_mel.shape[-1]
     pred_A, pred_means, pred_vars = self.attention_predictor(src_mel, tgt_info, n_tgt_frames=n_tgt_frames)
     
     R = V.matmul(pred_A)
     pred_mel = self.decoder(R, tgt_info)
     
-    #=== Loss Calculation ===#
+    return self._calc_loss(pred_mel, tgt_mel, src_mask, tgt_mask, pred_A, pred_means, pred_vars, true_A,
+                           main_loss_fn = main_loss_fn,
+                           dal_tgt_sigma = dal_tgt_sigma,
+                           oal_tgt_sigma = oal_tgt_sigma,
+                           att_loss_weights = att_loss_weights,
+                           as_components = as_components)
     
-    # Main loss term
-    main_loss_fn = {
-      'mse': mse_loss,
-      'mae': mae_loss
-    }[main_loss_fn.lower()]
+  def _calc_loss(self, pred_mel, tgt_mel, src_mask, tgt_mask, pred_A, pred_means, pred_vars, true_A,
+                 main_loss_fn = 'mse', 
+                 dal_tgt_sigma = 0.3, 
+                 oal_tgt_sigma = 0.3, 
+                 att_loss_weights = None,
+                 as_components = False):
     
-    main_loss = main_loss_fn(pred_mel, tgt_mel, tgt_mask)
+    #=== Loss Terms ===#
+    main_loss = self._calc_main_loss(pred_mel, tgt_mel, tgt_mask, main_loss_fn)
+    da_loss, oa_loss, aa_loss = self._calc_att_loss(pred_A, src_mask, tgt_mask, 
+                                                    dal_tgt_sigma=dal_tgt_sigma,
+                                                    oal_tgt_sigma=oal_tgt_sigma,
+                                                    pred_means=pred_means,
+                                                    pred_vars=pred_vars,
+                                                    true_A=true_A)
     
-    # Auxiliary attention loss
-    aa_loss = auxil_att_loss(pred_means, pred_vars, true_A)
-    # Diagonal attention loss
-    da_loss = diag_att_loss(pred_A, src_mask, tgt_mask, tgt_sigma = dal_tgt_sigma)
-    # Orthogonal attention loss
-    oa_loss = ortho_att_loss(pred_A, src_mask, tgt_sigma = oal_tgt_sigma)
-    
+    #=== Combine Loss ===#
     # Return as components if requested
     if as_components:
-      return {'main loss': main_loss, 'aa loss': aa_loss, 'da loss': da_loss, 'oa loss': oa_loss}, pred_A
+      return {'main loss': main_loss, 
+              'aa loss': aa_loss, 
+              'da loss': da_loss, 
+              'oa loss': oa_loss}, pred_A
     
-    # Combine loss terms
-    if loss_weights is None:
-      loss_weights = [1, 2000, 2000]
+    # Weigh and sum loss terms
+    if att_loss_weights is None:
+      att_loss_weights = [1, 2000, 2000]
       
     total_loss = main_loss
     
-    for lw, loss_term in zip(loss_weights, [aa_loss, da_loss, oa_loss]):
+    for lw, loss_term in zip(att_loss_weights, [aa_loss, da_loss, oa_loss]):
       total_loss += lw * loss_term
       
     return total_loss, pred_A
@@ -509,7 +558,39 @@ class KenkuStudent(KenkuModel):
 ### DRL Models ###
 ##################
 
-class DRLKenkuTeacher(KenkuTeacher):
+class DRLLossMixin:
+  def _calc_drl_loss(self, src_variational, tgt_variational, dataset_size,
+                     drl_loss_weights = None, as_components = False):
+    
+    src_info, src_z, src_mu, src_log_var = src_variational
+    tgt_info, tgt_z, tgt_mu, tgt_log_var = tgt_variational
+    
+    # Sum the src and target loss components individually
+    mi_loss, tc_loss, dw_kld_loss = torch.stack([
+      torch.stack(beta_tcvae_loss_terms(src_z, src_mu, src_log_var, dataset_size)),
+      torch.stack(beta_tcvae_loss_terms(tgt_z, tgt_mu, tgt_log_var, dataset_size))
+    ]).sum(dim=0)
+    
+    if drl_loss_weights is None:
+      drl_loss_weights = [1.0, 1.0, 1.0]
+      
+    # Factor terms with alpha, beta, and gamma. Then sum
+    drl_loss = torch.sum(torch.tensor(drl_loss_weights, device=mi_loss.device) * torch.stack([mi_loss, tc_loss, dw_kld_loss]))
+    #=== Return Loss ===#
+    
+    if as_components:
+      loss_components = {
+        'drl loss': drl_loss,
+        'mi loss': mi_loss,
+        'tc loss': tc_loss,
+        'dw kld loss': dw_kld_loss
+      }
+      return loss_components
+
+    return drl_loss
+
+
+class DRLKenkuTeacher(KenkuTeacher, DRLLossMixin):
   def __init__(self,
                in_ch: int,
                conv_ch: int,
@@ -543,24 +624,25 @@ class DRLKenkuTeacher(KenkuTeacher):
     
     self._init_embed_layer(use_drl = True)
     
-  def forward(self, src_mel, tgt_mel, src_mask, tgt_mask, stack = True):
+  def forward(self, src_mel, tgt_mel, src_mask, tgt_mask, stack = True, return_variational = False):
     if stack:
-      sf = self.stack_factor
-      src_mel  = stack_frames(src_mel, sf)
-      tgt_mel  = stack_frames(tgt_mel, sf)
+      src_mel, tgt_mel = self.stack_mels(src_mel, tgt_mel)
+      src_mask, tgt_mask = self.stack_masks(src_mask, tgt_mask)
       
-      src_mask = src_mask[:,:,::sf]
-      tgt_mask = tgt_mask[:,:,::sf]
+    src_info, src_z, src_mu, src_log_var = self.speaker_info_predictor(src_mel, src_mask)
+    tgt_info, tgt_z, tgt_mu, tgt_log_var = self.speaker_info_predictor(tgt_mel, tgt_mask)
     
-    src_info, _, _, _ = self.speaker_info_predictor(src_mel, src_mask)
-    tgt_info, _, _, _ = self.speaker_info_predictor(tgt_mel, tgt_mask)
-    
-    Y, pred_A = super(DRLKenkuTeacher, self).forward(src_mel, tgt_mel, src_info, tgt_info, stack=False)
+    Y, A = super(DRLKenkuTeacher, self).forward(src_mel, tgt_mel, src_info, tgt_info, stack=False)
     
     if stack:
       Y = unstack_frames(Y, self.stack_factor)
-      
-    return Y, pred_A
+    
+    if return_variational:
+      src_variational = (src_info, src_z, src_mu, src_log_var)
+      tgt_variational = (tgt_info, tgt_z, tgt_mu, tgt_log_var)
+      return Y, A, src_variational, tgt_variational
+    
+    return Y, A
     
   def calc_loss(self, src_mel, tgt_mel, src_mask, tgt_mask, dataset_size,
                 main_loss_fn = 'mse', 
@@ -571,59 +653,43 @@ class DRLKenkuTeacher(KenkuTeacher):
                 drl_loss_weights = None,
                 as_components = False):
     
-    if self.stack_factor > 1:
-      sf = self.stack_factor
-      stacked_src_mel  = stack_frames(src_mel, sf)
-      stacked_tgt_mel  = stack_frames(tgt_mel, sf)
-      
-      stacked_src_mask = src_mask[:,:,::sf]
-      stacked_tgt_mask = tgt_mask[:,:,::sf]
-      
-      src_info, src_z, src_mu, src_var = self.speaker_info_predictor(stacked_src_mel, stacked_src_mask)
-      tgt_info, tgt_z, tgt_mu, tgt_var = self.speaker_info_predictor(stacked_tgt_mel, stacked_tgt_mask)
+    if att_loss_weights is not None:
+      assert len(att_loss_weights) == 2, f"Incorrect amount of attention loss weights. Expected 2, got {len(att_loss_weights)}."
     
-    else:
-      src_info, src_z, src_mu, src_var = self.speaker_info_predictor(src_mel, src_mask)
-      tgt_info, tgt_z, tgt_mu, tgt_var = self.speaker_info_predictor(tgt_mel, tgt_mask)
-      
+    if drl_loss_weights is not None:
+      assert len(drl_loss_weights) == 3, f"Incorrect amount of DRL loss weights. Expected 3, got {len(drl_loss_weights)}."
     
-    loss, pred_A = super(DRLKenkuTeacher, self).calc_loss(
-      src_mel, tgt_mel, src_mask, tgt_mask, src_info, tgt_info,
+    # Preprocess inputs by applying position encoding, frame stacking, and target zero-frame prepend
+    src_mel, tgt_mel, src_mask, tgt_mask = self._loss_input_preprocess(
+      src_mel, tgt_mel, src_mask, tgt_mask
+    )
+      
+    #=== Forward Pass ===#
+    pred_mel, A, src_variational, tgt_variational = self(src_mel, tgt_mel, src_mask, tgt_mask, stack=False, return_variational=True)
+    
+    #=== Main and Attention Loss Calculation ===#
+    loss, A = super(DRLKenkuTeacher, self)._calc_loss(
+      pred_mel, tgt_mel, src_mask, tgt_mask, A,
       main_loss_fn = main_loss_fn,
-      pos_weight = pos_weight,
       dal_tgt_sigma = dal_tgt_sigma,
       oal_tgt_sigma = oal_tgt_sigma,
-      loss_weights = att_loss_weights,
+      att_loss_weights = att_loss_weights,
       as_components = as_components
     )
     
     #=== DRL Loss Calculation ===#
+    drl_loss = self._calc_drl_loss(src_variational, tgt_variational, dataset_size,
+                                  drl_loss_weights = drl_loss_weights,
+                                  as_components = as_components)
     
-    if drl_loss_weights is None:
-      drl_loss_weights = [1.0, 1.0, 1.0]
-      
-    beta_tcvae_kwargs = dict(zip(['alpha', 'beta', 'gamma'], drl_loss_weights))
-    # Sum the src and target loss components individually
-    drl_loss, mi_loss, tc_loss, dw_kld_loss = torch.stack([
-      torch.stack(beta_tcvae_loss(src_z, src_mu, src_var, dataset_size, **beta_tcvae_kwargs)),
-      torch.stack(beta_tcvae_loss(tgt_z, tgt_mu, tgt_var, dataset_size, **beta_tcvae_kwargs))
-    ]).sum(dim=0)
-    
-    #=== Return Loss ===#
-    
+    #=== Combine Loss ===#
     if as_components:
-      assert isinstance(loss, dict), "Expected `loss` to be a dict when as_components is True."
       loss_components = loss
-      loss_components.update({
-        'drl loss': drl_loss,
-        'mi loss': mi_loss,
-        'tc loss': tc_loss,
-        'dw kld loss': dw_kld_loss
-      })
-      return loss_components, pred_A
+      loss_components.update(drl_loss)
+      return loss_components, A
     
     loss += drl_loss
-    return loss, pred_A
+    return loss, A
     
   def to_student(self, student_kwargs=None):
     student_kwargs = {} if student_kwargs is None else student_kwargs
@@ -633,6 +699,10 @@ class DRLKenkuTeacher(KenkuTeacher):
     student.load_teacher_state_dict(self.state_dict())
     
     return student
+  
+  def clear_paddings(self):
+    super(DRLKenkuTeacher, self).clear_paddings()
+    self.speaker_info_predictor.clear_paddings()
     
 class DRLKenkuStudent(KenkuStudent):
   def __init__(self,
@@ -671,12 +741,8 @@ class DRLKenkuStudent(KenkuStudent):
     
   def forward(self, src_mel, tgt_mel, src_mask, tgt_mask, stack = True):
     if stack:
-      sf = self.stack_factor
-      src_mel  = stack_frames(src_mel, sf)
-      tgt_mel  = stack_frames(tgt_mel, sf)
-      
-      src_mask = src_mask[:,:,::sf]
-      tgt_mask = tgt_mask[:,:,::sf]
+      src_mel, tgt_mel = self.stack_mels(src_mel, tgt_mel)
+      src_mask, tgt_mask = self.stack_masks(src_mask, tgt_mask)
     
     src_info, src_mu, src_var = self.speaker_info_predictor(src_mel, src_mask)
     tgt_info, tgt_mu, tgt_var = self.speaker_info_predictor(tgt_mel, tgt_mask)
@@ -696,57 +762,12 @@ class DRLKenkuStudent(KenkuStudent):
                 att_loss_weights = None,
                 drl_loss_weights = None,
                 as_components = False):
-    
-    if self.stack_factor > 1:
-      sf = self.stack_factor
-      stacked_src_mel  = stack_frames(src_mel, sf)
-      stacked_tgt_mel  = stack_frames(tgt_mel, sf)
-      
-      stacked_src_mask = src_mask[:,:,::sf]
-      stacked_tgt_mask = tgt_mask[:,:,::sf]
-      
-      src_info, src_mu, src_var = self.speaker_info_predictor(stacked_src_mel, stacked_src_mask)
-      tgt_info, tgt_mu, tgt_var = self.speaker_info_predictor(stacked_tgt_mel, stacked_tgt_mask)
-    
-    else:
-      src_info, src_mu, src_var = self.speaker_info_predictor(src_mel, src_mask)
-      tgt_info, tgt_mu, tgt_var = self.speaker_info_predictor(tgt_mel, tgt_mask)
-      
-    
-    loss, pred_A = super(DRLKenkuStudent, self).calc_loss(
-      src_mel, tgt_mel, src_mask, tgt_mask, src_info, tgt_info,
-      main_loss_fn = main_loss_fn,
-      pos_weight = pos_weight,
-      dal_tgt_sigma = dal_tgt_sigma,
-      oal_tgt_sigma = oal_tgt_sigma,
-      loss_weights = att_loss_weights,
-      as_components = as_components
-    )
-    if drl_loss_weights is None:
-      drl_loss_weights = [1.0, 1.0, 1.0]
-      
-    beta_tcvae_kwargs = dict(zip(['alpha', 'beta', 'gamma'], drl_loss_weights))
-    # Sum the src and target loss components individually
-    
-    drl_loss, mi_loss, tc_loss, dw_kld_loss = np.sum([
-      beta_tcvae_loss(src_mu, src_var, dataset_size, **beta_tcvae_kwargs),
-      beta_tcvae_loss(tgt_mu, tgt_var, dataset_size, **beta_tcvae_kwargs)
-    ], axis=0)
-    
-    if as_components:
-      assert isinstance(loss, dict), "Expected `loss` to be a dict when as_components is True."
-      loss_components = loss
-      loss_components.update({
-        'drl loss': drl_loss,
-        'mi loss': mi_loss,
-        'tc loss': tc_loss,
-        'dw kld loss': dw_kld_loss
-      })
-      return loss_components, pred_A
-    
-    loss += drl_loss
-    return loss, pred_A
-      
+    pass
+  
+  
+  def clear_paddings(self):
+    super(DRLKenkuTeacher, self).clear_paddings()
+    self.speaker_info_predictor.encoder.clear_paddings()
     
     
     
@@ -758,7 +779,7 @@ if __name__ == "__main__":
     'teacher to student',
     'segmented',
     'drl teacher'
-  ][2]
+  ][1]
   
   if mode == 'teacher to student':
     from torch.utils.data import DataLoader
@@ -796,11 +817,11 @@ if __name__ == "__main__":
     
     m = KenkuTeacher(5, 5, 5, 5, 2, 1, stack_factor=1)
     
-    X = torch.rand(3, 5, 8)
-    mask = torch.ones(3, 1, 8)
-    info = torch.rand(3, 3, 8)
+    X = torch.rand(3, 5, 8, device=device)
+    mask = torch.ones(3, 1, 8, device=device)
+    info = torch.randint(11, (3, 3, 8), device=device)
     
-    full_Y = m(X, X, mask, mask, info, info)
+    full_Y = m(X, X, info, info)
   
   elif mode == 'drl teacher':
     
@@ -815,10 +836,10 @@ if __name__ == "__main__":
     num_accents= 2
     m = DRLKenkuTeacher(in_ch, conv_ch, att_ch, out_ch, embed_ch, num_accents, stack_factor=1)
     
-    X = torch.rand(batch_size, in_ch, n_frames)
-    mask = torch.ones(batch_size, 1, n_frames)
+    X = torch.rand(batch_size, in_ch, n_frames, device=device)
+    mask = torch.ones(batch_size, 1, n_frames, device=device)
     mask[0,0,:-3] = 0
     full_Y = m(X, X, mask, mask)
     # print(full_Y)
-    loss = m.calc_loss(X, X, mask, mask, dataset_size=30000)
+    loss = m.calc_loss(X, X, mask, mask, 30000, att_loss_weights=[1.,1.,1.])
     print(loss[0])

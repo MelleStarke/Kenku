@@ -210,7 +210,7 @@ def log_importance_weight_matrix(batch_size, dataset_size, device='cpu'):
   
   return W.log()
 
-def beta_tcvae_loss(z, mu, log_var, dataset_size, alpha=1., beta=1., gamma=1., use_mss=True):
+def beta_tcvae_loss_terms(z, mu, log_var, dataset_size, use_mss=True):
   """
   Compute the β-TCVAE loss as described in the paper "vsolating Sources of Disentanglement in VAEs" by Chen et al. (2018)
   
@@ -226,14 +226,10 @@ def beta_tcvae_loss(z, mu, log_var, dataset_size, alpha=1., beta=1., gamma=1., u
     log_var: Tensor of shape (batch_size, latent_dim) representing the predicted log variance of the latent variables
     dataset_size: Size of the dataset used for training
     
-    alpha: Weight for the Mutual Information term
-    beta: Weight for the Total Correlation term
-    gamma: Weight for the Dimwise KL Divergence term
     use_mss: Boolean indicating whether to use Minibatch Stratified Sampling (MSS) or Minibatch Weighted Sampling (MWS)
       
   Returns:
     A tuple containing:
-      - The total weighted loss value
       - The Mutual Information term
       - The Total Correlation term
       - The Dimwise KL Divergence term
@@ -282,7 +278,6 @@ def beta_tcvae_loss(z, mu, log_var, dataset_size, alpha=1., beta=1., gamma=1., u
   dimwise_kld_loss = -(log_prod_qz - log_prior).mean()
   
   return (
-    alpha * mi_loss + beta * tc_loss + gamma * dimwise_kld_loss,
     mi_loss,
     tc_loss,
     dimwise_kld_loss
@@ -298,7 +293,7 @@ if __name__ == "__main__":
   mode = [
     'attention_masking',
     'auxil_loss'
-  ][0]
+  ][1]
   
   dataset_factory = ParallelDatasetFactory(dataset_dir = '../Data/processed/VCTK')
   
