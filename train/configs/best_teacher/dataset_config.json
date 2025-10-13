@@ -1,5 +1,4 @@
 {
-    "dataset_dir": "/home3/s4984218/scratch/processed",
     "min_samples": 7,
     "train_set_threshold": 10,
     "sample_pairing": [

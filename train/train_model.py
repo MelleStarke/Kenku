@@ -213,13 +213,15 @@ class TensorboardManager:
                n_train_batches: int,
                test_interval: int    = 500,
                max_test_batches: int = 100, 
-               n_images: int         = 6):
+               n_images: int         = 6,
+               use_drl: bool         = False):
       
     self.model = model
     self.test_loader = test_loader
     self.interval = test_interval
     self.max_test_batches = max_test_batches
     self.n_train_batches = n_train_batches
+    self.use_drl = use_drl
     self.writer = SummaryWriter(log_dir=directory)
     
     self.global_step = 0
@@ -242,8 +244,14 @@ class TensorboardManager:
     
     src_mel  = src_mel[:n_images, :, :last_masked_frame]
     tgt_mel  = tgt_mel[:n_images, :, :last_masked_frame]
+    src_mask = src_mask[:n_images, :, :last_masked_frame]
+    tgt_mask = tgt_mask[:n_images, :, :last_masked_frame]
     src_info = tuple(k[:n_images] for k in src_info)
     tgt_info = tuple(k[:n_images] for k in tgt_info)
+    
+    if self.use_drl:
+      # Infer speaker info from spectrograms. Requires the masks
+      return src_mel, tgt_mel, src_mask, tgt_mask,
     
     return src_mel, tgt_mel, src_info, tgt_info
   
@@ -294,8 +302,14 @@ class TensorboardManager:
     for bi, batch in enumerate(self.test_loader):
       if bi == n_test_batches:
         break
-      # print(f"\nTest batch shape: {batch[0].shape}")
+        
+      if self.use_drl:
+        # Remove the speaker info from the batch for DRL models, as they infer it from the spectrograms.
+        # Add dataset_size to estimate the beta-TCVAE terms.
+        batch = (*batch[:4], len(self.test_loader.dataset))
+        
       batch = recursive_to_device(batch, device)
+     
       loss_comps, _ = self.model.calc_loss(*batch, as_components=True)
       
       # Add to cumulative losses
@@ -786,6 +800,7 @@ def main():
     tensorboard_manager = TensorboardManager(model,
                                              test_loader,
                                              tensorboard_dir,
+                                             use_drl          = use_drl,
                                              n_train_batches  = len(train_loader),
                                              test_interval    = train_config['test_interval'],
                                              max_test_batches = train_config['max_test_batches'])
