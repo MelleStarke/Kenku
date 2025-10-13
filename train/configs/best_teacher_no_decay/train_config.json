@@ -1,0 +1,11 @@
+{
+    "main_loss": "mse",
+    "learning_rate": 1e-06,
+    "adam_betas": [
+        0.9,
+        0.999
+    ],
+    "DAL_weight": 200.0,
+    "OAL_weight": 200.0,
+    "DAL_weight_decay": 1.0
+}

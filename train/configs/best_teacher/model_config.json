@@ -1,0 +1,12 @@
+{
+    "model_class": "KenkuTeacher",
+    "from_teacher": null,
+    "in_ch": 80,
+    "conv_ch": 128,
+    "att_ch": 128,
+    "out_ch": 80,
+    "embed_ch": 32,
+    "num_accents": 11,
+    "stack_factor": 1,
+    "dropout_rate": 0.2
+}
