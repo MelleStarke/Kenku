@@ -562,6 +562,21 @@ def main():
   parser.add_argument('--att-weight-decay', '-wad', type=float, default=None, metavar='FLOAT',
                       help='Decay rate for the diagonal attention loss weight. Defaults to 4 / epochs. ' 
                             'Decay steps are done through wda <- wda * exp(-epoch * wda_decay).')
+  parser.add_argument('--tcvae-alpha', type=float, default=1.0, metavar='FLOAT',
+                      help='Weight of the Index-Code Mutual Information loss term for beta-TCVAE.')
+  parser.add_argument('--tcvae-beta', type=float, default=1.0, metavar='FLOAT',
+                      help='Weight of the Total Correlation loss term for beta-TCVAE.')
+  parser.add_argument('--tcvae-gamma', type=float, default=1.0, metavar='FLOAT',
+                      help='Weight of the Dimension-wise KL Divergence loss term for beta-TCVAE.')
+  parser.add_argument('--n-thaw-layers', type=int, default=None, metavar='INT',
+                      help='How many of the tranferred layers (from teacher to student) should be gradually thawed and finetuned. ' \
+                           'Starting with the speaker_info_predictor (if present), decoder, then src_encoder. From the last to the first layer.')
+  parser.add_argument('--ft-warmup-prop', type=float, default=0.1, metavar='FLOAT',
+                      help='If thawing transferred layers, define how many steps the model gets to \'warm up\' ' \
+                           'before beginning to thaw, as a proportion of the total number of training steps.')
+  parser.add_argument('--ft-thaw-prop', type=float, default=0.5, metavar='FLOAT',
+                      help='If thawing transferred layers, define how many steps the model gets to thaw them, ' \
+                           'as a proportion of the total number of training steps.')
   parser.add_argument('--test-interval', type=int, default=200, metavar='INT',
                       help='Amount of update steps between every test loss calculation.')
   parser.add_argument('--melspec-interval', type=int, default=500, metavar='INT',
@@ -624,6 +639,7 @@ def main():
   
   # Training Config
   train_config_keys = ['epochs', 'main_loss', 'learning_rate', 'adam_betas', 'batch_size', 'DAL_weight', 'OAL_weight', 'att_weight_decay', 
+                       'tcvae_alpha', 'tcvae_alpha', 'tcvae_alpha', 'n_thaw_layers', 'ft_warmup_prop', 'ft_thaw_prop',
                        'test_interval', 'melspec_interval', 'max_test_batches', 'run_dir', 'checkpoint_interval', 
                        'checkpoint_max', 'from_checkpoint', 'no_log']
   train_config = create_config_dict(args_dict, train_config_keys, args.train_config_path)
@@ -636,16 +652,16 @@ def main():
   #=== Initialize Model ===#
 
   model_class = model_config['model_class'].lower().replace(' ', '')
-  use_drl = model_config['drl']
+  use_drl = 'drl' in model_class or model_config['drl']
   
-  if model_class in ['kenkuteacher', 'teacher', 'teach', 'tea']:
+  if 'teacher' in model_class:
     if use_drl:
       model = DRLKenkuTeacher
     else: 
       model = KenkuTeacher
     is_student = False
     
-  elif model_class in ['kenkustudent', 'student', 'stud', 'stu']:
+  elif 'student' in model_class:
     if use_drl:
       model = DRLKenkuStudent
     else:
@@ -653,7 +669,7 @@ def main():
     is_student = True
     
   else:
-    raise ValueError('Incorrect model class. Use `KenkuTeacher` or `KenkuStudent`.')
+    raise ValueError('Incorrect model class. Use `teacher` or `student`.')
   
   model_init_args = model_config.copy()
   for remove_key in ['model_class', 'drl', 'from_teacher']:
@@ -778,8 +794,8 @@ def main():
   if not os.path.exists(checkpoint_dir) and not train_config['no_log']:
     os.makedirs(checkpoint_dir)
   
-  if train_config['no_log']:
-    print('Logging disabled')
+  if train_config['no_log'] or train_config['checkpoint_max'] == 0:
+    print('Checkpoint saving disabled')
     checkpoint_manager = DummyManager()
   else:
     print(f'Logging performance and saving checkpoints in {run_dir}')
@@ -795,6 +811,7 @@ def main():
   tensorboard_dir = run_dir
   
   if train_config['no_log']:
+    print('Tensorbard logging disabled')
     tensorboard_manager = DummyManager()
   else:
     tensorboard_manager = TensorboardManager(model,

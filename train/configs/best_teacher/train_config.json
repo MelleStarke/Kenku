@@ -6,6 +6,5 @@
         0.999
     ],
     "DAL_weight": 200.0,
-    "OAL_weight": 200.0,
-    "DAL_weight_decay": null
+    "OAL_weight": 200.0
 }

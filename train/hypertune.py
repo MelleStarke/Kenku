@@ -83,7 +83,7 @@ if __name__ == "__main__":
   
   #=== Process Hidden Channels Individually or In Tandem ===#
   sf = this_setting['stack_factor']
-  if all(channel in this_setting for channel in ['conv_ch', 'att_ch'])
+  if all(channel in this_setting for channel in ['conv_ch', 'att_ch']):
     for channel in ['conv_ch', 'att_ch']:
       this_setting[channel] = this_setting[channel] * sf
       
@@ -113,7 +113,7 @@ if __name__ == "__main__":
   this_setting['run_dir'] = run_dir
   
   #=== Construct Config Dicts ===#
-  dataset_config = {k: this_setting[k] for k [
+  dataset_config = {k: this_setting[k] for k in [
     'dataset_dir',
     'n_cores',
     'min_samples',
@@ -123,7 +123,7 @@ if __name__ == "__main__":
     'preload_melspecs'
   ]}
   
-  model_config = {k: this_setting[k] for k [
+  model_config = {k: this_setting[k] for k in [
     'model_class',
     'drl',
     'from_teacher',
@@ -137,7 +137,7 @@ if __name__ == "__main__":
     'dropout_rate'
   ]}
 
-  train_config = {k: this_setting[k] for k [
+  train_config = {k: this_setting[k] for k in [
     'epochs',
     'batch_size',
     'main_loss',
