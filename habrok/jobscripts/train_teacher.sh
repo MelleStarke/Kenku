@@ -4,9 +4,9 @@
 #SBATCH --partition gpu
 #SBATCH --cpus-per-task 25
 #SBATCH --mem-per-cpu 2G
-#SBATCH --time 1-12:00:00
+#SBATCH --time 0:20:00
 #SBATCH --nodes 1
-#SBATCH --gpus-per-node=a100:1
+#SBATCH --gpus-per-node=1
 
 #SBATCH --job-name="train_teacher_no_wd"
 #SBATCH --output="/home3/s4984218/Kenku/habrok/jobscripts/results/train_teacher/tuned/no_weight_decay/%j.out"

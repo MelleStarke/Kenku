@@ -1,0 +1,21 @@
+{
+  "dataset_dir": "/home3/s4984218/scratch/processed",
+  "min_samples": 7,
+  "train_set_threshold": 10,
+  "sample_pairing": [
+    "product",
+    "random"
+  ],
+
+  "model_class": "KenkuTeacher",
+  "embed_ch": 16,
+  "dropout_rate": 0.2,
+
+  "epochs": 100,
+  "batch_size": 600,
+  "att_weight": 2000,
+  "test_interval": 100,
+  "melspec_interval": 200,
+  "max_test_batches": 100,
+  "checkpoint_max": 0
+}

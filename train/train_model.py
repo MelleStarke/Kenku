@@ -41,6 +41,22 @@ from train.optimize import group_student_params, IncrementalThawScheduler
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+
+###################
+### Config Keys ###
+###################
+
+DATASET_CONFIG_KEYS = ['dataset_dir', 'n_cores', 'min_samples', 'train_set_threshold', 'sample_pairing',
+                        'no_downsample','preload_melspecs']
+
+MODEL_CONFIG_KEYS = ['model_class', 'drl', 'from_teacher', 'in_ch', 'conv_ch', 'att_ch', 'out_ch', 
+                      'embed_ch', 'num_accents', 'stack_factor', 'dropout_rate']
+
+TRAIN_CONFIG_KEYS = ['epochs', 'batch_size', 'main_loss', 'learning_rate', 'adam_betas', 'DAL_weight', 'OAL_weight', 'att_weight_decay', 
+                      'tcvae_alpha', 'tcvae_beta', 'tcvae_gamma', 'n_thaw_layers', 'ft_warmup_prop', 'ft_thaw_prop',
+                      'test_interval', 'melspec_interval', 'max_test_batches', 'run_dir', 'checkpoint_interval', 
+                      'checkpoint_max', 'from_checkpoint', 'no_log']
+
 ###############
 ### Logging ###
 ###############
@@ -415,6 +431,7 @@ def train_model(model: KenkuModel,
                 DAL_weight: float       = 0.,
                 OAL_weight: float       = 0.,
                 att_weight_decay: float = None,
+                drl_loss_weights: Optional[List[float]] = None,
                 scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None):
 
   oom_handler = OOMHandler(model)
@@ -460,7 +477,10 @@ def train_model(model: KenkuModel,
       
       #=== Calculate Loss ===#
       with oom_handler:
-        loss, A = model.calc_loss(*batch, main_loss_fn=main_loss_fn, att_loss_weights=att_loss_weights)
+        loss, A = model.calc_loss(*batch, 
+                                  main_loss_fn=main_loss_fn, 
+                                  att_loss_weights=att_loss_weights,
+                                  drl_loss_weights=drl_loss_weights)
       
       # If an OOM error occurred, continue to the next iteration to prevent weight update.
       if oom_handler.oom_occurred:
@@ -628,21 +648,13 @@ def main():
   # Merge Command Line and Config File Arguments
   
   # Dataset Config
-  dataset_config_keys = ['dataset_dir', 'n_cores', 'min_samples', 'train_set_threshold', 'sample_pairing',
-                         'no_downsample','preload_melspecs']
-  dataset_config = create_config_dict(args_dict, dataset_config_keys, args.dataset_config_path)
+  dataset_config = create_config_dict(args_dict, DATASET_CONFIG_KEYS, args.dataset_config_path)
   
   # Model Config
-  model_config_keys = ['model_class', 'drl', 'from_teacher', 'in_ch', 'conv_ch', 'att_ch', 'out_ch', 
-                       'embed_ch', 'num_accents', 'stack_factor', 'dropout_rate']
-  model_config = create_config_dict(args_dict, model_config_keys, args.model_config_path)
+  model_config = create_config_dict(args_dict, MODEL_CONFIG_KEYS, args.model_config_path)
   
   # Training Config
-  train_config_keys = ['epochs', 'main_loss', 'learning_rate', 'adam_betas', 'batch_size', 'DAL_weight', 'OAL_weight', 'att_weight_decay', 
-                       'tcvae_alpha', 'tcvae_beta', 'tcvae_gamma', 'n_thaw_layers', 'ft_warmup_prop', 'ft_thaw_prop',
-                       'test_interval', 'melspec_interval', 'max_test_batches', 'run_dir', 'checkpoint_interval', 
-                       'checkpoint_max', 'from_checkpoint', 'no_log']
-  train_config = create_config_dict(args_dict, train_config_keys, args.train_config_path)
+  train_config = create_config_dict(args_dict, TRAIN_CONFIG_KEYS, args.train_config_path)
   
   print(config_to_str({'dataset_config': dataset_config,
                        'model_config'  : model_config,
@@ -653,6 +665,7 @@ def main():
 
   model_class = model_config['model_class'].lower().replace(' ', '')
   use_drl = 'drl' in model_class or model_config['drl']
+  model_config['drl'] = use_drl
   
   if 'teacher' in model_class:
     if use_drl:
@@ -736,7 +749,9 @@ def main():
     model.load_teacher_state_dict(teacher_checkpoint['model'])
     
     # Create parameter groups for incremental and gradual thawing of transferred weights
-    param_groups = group_student_params(model, format_for_optimizer=True)
+    param_groups = group_student_params(model, 
+                                        max_groups=train_config['n_thaw_layers'],
+                                        format_for_optimizer=True)
     
     del(teacher_checkpoint)
     gc.collect()
@@ -756,7 +771,10 @@ def main():
   # If a student model was created from a teacher, set up an incremental thaw scheduler
   if model_config['from_teacher']:
     total_steps = len(train_loader) * train_config['epochs']
-    thaw_scheduler = IncrementalThawScheduler(optimizer, total_steps=total_steps)
+    thaw_scheduler = IncrementalThawScheduler(optimizer, 
+                                              total_steps=total_steps,
+                                              warmup_steps=train_config['ft_warmup_prop'],
+                                              thawing_steps=train_config['ft_thaw_prop'])
   
   #=== Load Checkpoint ===#
   
@@ -844,6 +862,8 @@ def main():
   print(f"\n===== Starting Training =====")
   print(f'Time: {datetime.now().strftime("%H:%M:%S")}')
 
+  drl_loss_weights = [train_config[k] for k in ['tcvae_alpha', 'tcvae_beta', 'tcvae_gamma']]
+
   train_model(model,
               optimizer,
               train_loader,
@@ -857,6 +877,7 @@ def main():
               DAL_weight       = train_config['DAL_weight'],
               OAL_weight       = train_config['OAL_weight'],
               att_weight_decay = train_config['att_weight_decay'],
+              drl_loss_weights = drl_loss_weights,
               scheduler        = thaw_scheduler if model_config['from_teacher'] else None
               )
 

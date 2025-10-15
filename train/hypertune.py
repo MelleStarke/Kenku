@@ -6,6 +6,8 @@ from itertools import product
 
 from data.util import save_config, load_config
 
+from train.train_model import DATASET_CONFIG_KEYS, MODEL_CONFIG_KEYS, TRAIN_CONFIG_KEYS
+
 
 shorthand_setting_names = {
   'stack_factor': 'sf',
@@ -114,56 +116,9 @@ if __name__ == "__main__":
   this_setting['run_dir'] = run_dir
   
   #=== Construct Config Dicts ===#
-  dataset_config = {k: this_setting[k] for k in [
-    'dataset_dir',
-    'n_cores',
-    'min_samples',
-    'train_set_threshold',
-    'sample_pairing',
-    'no_downsample',
-    'preload_melspecs'
-  ] if k in this_setting}
-  
-  model_config = {k: this_setting[k] for k in [
-    'model_class',
-    'drl',
-    'from_teacher',
-    'in_ch',
-    'conv_ch',
-    'att_ch',
-    'out_ch',
-    'embed_ch',
-    'num_accents',
-    'stack_factor',
-    'dropout_rate'
-  ] if k in this_setting}
-
-  train_config = {k: this_setting[k] for k in [
-    'epochs',
-    'batch_size',
-    'main_loss',
-    'learning_rate',
-    'adam_betas',
-    'DAL_weight',
-    'OAL_weight',
-    'att_weight_decay',
-    'tcvae_alpha',
-    'tcvae_beta',
-    'tcvae_gamma',
-    'n_thaw_layers',
-    'ft_warmup_prop',
-    'ft_thaw_prop',
-    'test_interval',
-    'melspec_interval',
-    'max_test_batches',
-    'run_dir',
-    'checkpoint_interval',
-    'checkpoint_max',
-    'from_checkpoint'
-  ] if k in this_setting}
-  
-  for name, config in zip(['DATA', 'MODEL', 'TRAIN'], [dataset_config, model_config, train_config]):
-    print(f'\n\n{name}\n\n{config}')
+  dataset_config = {k: this_setting[k] for k in DATASET_CONFIG_KEYS if k in this_setting}
+  model_config   = {k: this_setting[k] for k in MODEL_CONFIG_KEYS   if k in this_setting}
+  train_config   = {k: this_setting[k] for k in TRAIN_CONFIG_KEYS   if k in this_setting}
   
   # Save configs to the run directory
   for name, config in zip(['dataset', 'model', 'train'], [dataset_config, model_config, train_config]):

@@ -357,7 +357,8 @@ class KenkuTeacher(KenkuModel):
                 dal_tgt_sigma = 0.3, 
                 oal_tgt_sigma = 0.3, 
                 att_loss_weights = None,
-                as_components = False):
+                as_components = False,
+                **kwargs):
     
     if att_loss_weights is not None:
       assert len(att_loss_weights) == 2, f"Incorrect amount of attention loss weights. Expected 2, got {len(att_loss_weights)}."
@@ -483,7 +484,8 @@ class KenkuStudent(KenkuModel):
                 dal_tgt_sigma = 0.3, 
                 oal_tgt_sigma = 0.3, 
                 att_loss_weights = None,
-                as_components = False):
+                as_components = False,
+                **kwargs):
     
     if att_loss_weights is not None:
       assert len(att_loss_weights) == 3, f"Incorrect amount of attention loss weights. Expected 3, got {len(att_loss_weights)}."
@@ -497,10 +499,9 @@ class KenkuStudent(KenkuModel):
     # Cannot call self.forward() due to needing to calculate the true attention matrix
     K, V, Q = self._encode_inputs(src_mel, tgt_mel, src_info, tgt_info, stack = False)
     
-    # Real attention matrix from the Teacher's encoders
+    # Real attention matrix from the Teacher's encoder
     _, true_A = self.attention(K, V, Q)
     
-    # TODO: prepend zero frame as start of sequence token?
     # Time-scaled sequence according to the attention predictor
     n_tgt_frames = tgt_mel.shape[-1]
     pred_A, pred_means, pred_vars = self.attention_predictor(src_mel, tgt_info, n_tgt_frames=n_tgt_frames)
@@ -739,19 +740,26 @@ class DRLKenkuStudent(KenkuStudent):
     
     self._init_embed_layer(use_drl = True)
     
-  def forward(self, src_mel, tgt_mel, src_mask, tgt_mask, stack = True):
+  def forward(self, src_mel, tgt_mel, src_mask, tgt_mask, 
+              stack = True,
+              return_variational = False):
     if stack:
       src_mel, tgt_mel = self.stack_mels(src_mel, tgt_mel)
       src_mask, tgt_mask = self.stack_masks(src_mask, tgt_mask)
     
-    src_info, src_mu, src_var = self.speaker_info_predictor(src_mel, src_mask)
-    tgt_info, tgt_mu, tgt_var = self.speaker_info_predictor(tgt_mel, tgt_mask)
+    src_info, src_z, src_mu, src_log_var = self.speaker_info_predictor(src_mel, src_mask)
+    tgt_info, src_z, tgt_mu, tgt_log_var = self.speaker_info_predictor(tgt_mel, tgt_mask)
     
     Y, pred_A = super(DRLKenkuStudent, self).forward(src_mel, src_info, tgt_info, stack=False)
     
     if stack:
       Y = unstack_frames(Y, self.stack_factor)
       
+    if return_variational:
+      src_variational = (src_info, src_z, src_mu, src_log_var)
+      tgt_variational = (tgt_info, tgt_z, tgt_mu, tgt_log_var)
+      return Y, pred_A, src_variational, tgt_variational
+    
     return Y, pred_A
     
   def calc_loss(self, src_mel, tgt_mel, src_mask, tgt_mask, dataset_size,
@@ -762,8 +770,61 @@ class DRLKenkuStudent(KenkuStudent):
                 att_loss_weights = None,
                 drl_loss_weights = None,
                 as_components = False):
-    pass
-  
+    
+    if att_loss_weights is not None:
+      assert len(att_loss_weights) == 3, f"Incorrect amount of attention loss weights. Expected 3, got {len(att_loss_weights)}."
+    
+    if drl_loss_weights is not None:
+      assert len(drl_loss_weights) == 3, f"Incorrect amount of DRL loss weights. Expected 3, got {len(drl_loss_weights)}."
+    
+    # Preprocess inputs by applying position encoding, frame stacking, and target zero-frame prepend
+    src_mel, tgt_mel, src_mask, tgt_mask = self._loss_input_preprocess(
+      src_mel, tgt_mel, src_mask, tgt_mask
+    )
+    
+    
+    #=== Forward Pass ===#
+    # Cannot call self.forward() due to needing to calculate the true attention matrix
+    src_variational = self.speaker_info_predictor(src_mel, src_mask)
+    tgt_variational = self.speaker_info_predictor(tgt_mel, tgt_mask)
+    src_info = src_variational[0]
+    tgt_info = tgt_variational[0]
+    
+    K, V, Q = self._encode_inputs(src_mel, tgt_mel, src_info, tgt_info, stack = False)
+    
+    # Real attention matrix from the Teacher's encoder
+    _, true_A = self.attention(K, V, Q)
+    
+    # Time-scaled sequence according to the attention predictor
+    n_tgt_frames = tgt_mel.shape[-1]
+    pred_A, pred_means, pred_vars = self.attention_predictor(src_mel, tgt_info, n_tgt_frames=n_tgt_frames)
+    
+    R = V.matmul(pred_A)
+    pred_mel = self.decoder(R, tgt_info)
+    
+    #=== Main and Attention Loss Calculation ===#
+    loss, A = super(DRLKenkuStudent, self)._calc_loss(
+      pred_mel, tgt_mel, src_mask, tgt_mask, pred_A, pred_means, pred_vars, true_A,
+      main_loss_fn = main_loss_fn,
+      dal_tgt_sigma = dal_tgt_sigma,
+      oal_tgt_sigma = oal_tgt_sigma,
+      att_loss_weights = att_loss_weights,
+      as_components = as_components
+    )
+    
+    #=== DRL Loss Calculation ===#
+    drl_loss = self._calc_drl_loss(src_variational, tgt_variational, dataset_size,
+                                  drl_loss_weights = drl_loss_weights,
+                                  as_components = as_components)
+    
+    #=== Combine Loss ===#
+    if as_components:
+      loss_components = loss
+      loss_components.update(drl_loss)
+      return loss_components, A
+    
+    loss += drl_loss
+    return loss, A
   
   def clear_paddings(self):
     super(DRLKenkuTeacher, self).clear_paddings()
