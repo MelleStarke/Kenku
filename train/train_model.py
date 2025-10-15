@@ -343,7 +343,7 @@ class TensorboardManager:
     pred_mel, attention = self.model(*model_input, stack=True)
     src_mel, tgt_mel, _, _ = img_batch
     
-    # Send to checkpoint manager to get access to the actual numbers
+    # Send to checkpoint manager to give it access to the actual numbers
     self.checkpoint_manager.test_melspecs = [src_mel, tgt_mel, pred_mel]
     
     n_frames_diff = pred_mel.shape[-1] - src_mel.shape[-1]
@@ -639,7 +639,7 @@ def main():
   
   # Training Config
   train_config_keys = ['epochs', 'main_loss', 'learning_rate', 'adam_betas', 'batch_size', 'DAL_weight', 'OAL_weight', 'att_weight_decay', 
-                       'tcvae_alpha', 'tcvae_alpha', 'tcvae_alpha', 'n_thaw_layers', 'ft_warmup_prop', 'ft_thaw_prop',
+                       'tcvae_alpha', 'tcvae_beta', 'tcvae_gamma', 'n_thaw_layers', 'ft_warmup_prop', 'ft_thaw_prop',
                        'test_interval', 'melspec_interval', 'max_test_batches', 'run_dir', 'checkpoint_interval', 
                        'checkpoint_max', 'from_checkpoint', 'no_log']
   train_config = create_config_dict(args_dict, train_config_keys, args.train_config_path)

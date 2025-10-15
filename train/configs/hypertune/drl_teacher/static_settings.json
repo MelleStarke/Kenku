@@ -8,10 +8,13 @@
     ],
   
     "model_class": "DRLKenkuTeacher",
+    "hidden_ch": 80,
+    "embed_ch": 16,
     "in_ch": 80,
     "out_ch": 80,
     "num_accents": 11,
     "dropout_rate": 0.2,
+    "stack_factor": 1,
 
     "epochs": 50,
     "main_loss": "mse",

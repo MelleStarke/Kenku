@@ -466,7 +466,32 @@ class ConvGLU(KenkuModule):
 ### Attention Modules ###
 #########################
 
-class ScaledDotProductAttention(KenkuModule):
+class KenkuAttention(KenkuModule):
+  def __init__(self, view_distance: Optional[int]=32):
+    self.view_distance = view_distance
+    super(KenkuAttention, self).__init__()
+    
+  def apply_causal_mask(self, A):
+    n_src_frames, n_tgt_frames = A.shape
+    
+    # Mask-off all src-tgt frame combinations where the src-frame is later than the tgt-frame.
+    # This disallows attending to src-frames 'in the future' and allows only previous frames, thereby making it causal.
+    mask = torch.triu(torch.ones_like(A))
+    
+    # Apply a limit to how far the tgt-frames are allowed to look into the past.
+    # i.e. how many previous src-frames can be attended to.
+    view_limited_frames = n_tgt_frames - self.view_distance
+    vlf = view_limited_frames
+    vd = self.view_distance
+    
+    limit_mask = torch.triu(torch.ones(vlf, vlf), dtype=A.dtype, device=A.device)
+    mask[:vd+1, vlf-1:] = mask[:vd+1, vlf-1:] - limit_mask
+    
+    masked_A = mask * A
+    return masked_A
+
+class ScaledDotProductAttention(KenkuAttention):
+  
   def forward(self, K, V, Q):
     """Manual scaled dot product attention. Since the attention matrix should be passed for loss calculation.
 
@@ -480,11 +505,12 @@ class ScaledDotProductAttention(KenkuModule):
                           and attention matrix A of shape (batch, mels, mels).
     """
     A = nn.functional.softmax(torch.matmul(K.permute(0,2,1), Q)/np.sqrt(K.shape[1]), dim=1)
+    A = self.apply_causal_mask(A)
     R = torch.matmul(V,A)
     return R, A
   
 
-class AttentionPredictor(KenkuModule):
+class AttentionPredictor(KenkuAttention):
   def __init__(self,
                in_ch: int,
                conv_ch: int,
@@ -495,8 +521,9 @@ class AttentionPredictor(KenkuModule):
                signal_segment_len: int = 80,  # TODO: Currently unused
                dilations: Optional[List[int]] = None,
                dropout_rate: Optional[float] = 0.2,
+               view_distance: Optional[int] = 32,
                rng: Union[torch.Generator, int] = None):
-      super(AttentionPredictor, self).__init__()
+      super(AttentionPredictor, self).__init__(view_distance=view_distance)
       
       if rng is None:
         self.rng = torch.Generator(device=device)
@@ -546,6 +573,8 @@ class AttentionPredictor(KenkuModule):
     
     norm_gauss_att = unnorm_gauss_att / (unnorm_gauss_att.sum(dim=-1, keepdim=True) + 1e-8)
     norm_gauss_att = norm_gauss_att.squeeze()  # Remove empty channel: B x 1 x N x M -> B x N x M
+    
+    norm_gauss_att = self.apply_causal_mask(norm_gauss_att)
     
     return norm_gauss_att, means, stds
     

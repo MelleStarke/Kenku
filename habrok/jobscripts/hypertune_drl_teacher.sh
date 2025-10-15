@@ -7,7 +7,7 @@
 #SBATCH --time 0-6:00:00
 #SBATCH --nodes 1
 #SBATCH --gpus-per-node=1
-#SBATCH --array=1-35
+#SBATCH --array=1-18
 
 #SBATCH --job-name="hypertune_drl_teacher"
 #SBATCH --output="/home3/s4984218/Kenku/habrok/jobscripts/results/hypertune_drl_teacher/%j.out"

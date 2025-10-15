@@ -6,24 +6,6 @@ from itertools import product
 
 from data.util import save_config, load_config
 
-variable_settings = {
-  'stack_factor': [2, 4, 8],
-  'hidden_ch': [64, 128],
-  'dropout_rate': [0.2, 0.4],
-  'learning_rate': [1e-5, 5e-5, 1e-6],
-  'att_weight': [200, 2000],
-  'OAL_weight_on': [True],
-  'att_weight_decay': [0.0667, 0.0167],
-}
-# variable_settings = {
-#   'stack_factor': [4],
-#   'hidden_ch': [1, 12],
-#   'dropout_rate': [0.2, 0.5],
-#   'learning_rate': [5e-5],
-#   'att_weight': [2000.],
-#   'OAL_weight_on': [True],
-#   'att_weight_decay': [16],
-# }
 
 shorthand_setting_names = {
   'stack_factor': 'sf',
@@ -33,6 +15,22 @@ shorthand_setting_names = {
   'att_weight': 'aw',
   'OAL_weight_on': 'oal',
   'att_weight_decay': 'awd',
+  'num_accents': 'nac',
+  'min_samples': 'ms',
+  'train_set_threshold': 'tst',
+  'dropout_rate': 'dor',
+  'main_loss': 'mlf',
+  'tcvae_alpha': 'tca',
+  'tcvae_beta': 'tcb',
+  'tcvae_gamma': 'tcg',
+  'n_thaw_layers': 'ntl',
+  'ft_warmup_prop': 'ftw',
+  'ft_thaw_prop': 'ftt',  
+  'in_ch': 'ich',
+  'conv_ch': 'cch',
+  'att_ch': 'ach',
+  'out_ch': 'och',
+  'embed_ch': 'ech'
 }
 
 def get_setting(config_dict, idx):
@@ -64,20 +62,21 @@ if __name__ == "__main__":
   if len(keys_union) > 0:
     raise ValueError('There is at least one setting set as both static and variable. Make sure each setting is either static or variable' \
                     f'Setting(s) in question: {keys_union}')
-  
-  if args.setting_index == 1:
-    save_config(static_settings, os.path.join(args.job_dir, 'static_settings.json'))
-    save_config(variable_settings, os.path.join(args.job_dir, 'variable_settings.json'))
     
   this_setting = get_setting(variable_settings, args.setting_index)
   
   print("Setting: ", this_setting)
   
   # Make descriptive name of this run's folder
-  folder_name = ' '.join([f"{shorthand_setting_names[k]}={v}" for k, v in this_setting.items()])
+  folder_name = ' '.join([f"{shorthand_setting_names.get(k, k)}={v}" for k, v in this_setting.items()])
   run_dir = os.path.join(args.job_dir, folder_name)
   # Make directory and save configs
   os.makedirs(run_dir, exist_ok=True)
+  
+  # Save the overall hypertune settings in the array-job root directory
+  if args.setting_index == 1:
+    save_config(static_settings, os.path.join(args.job_dir, 'static_settings.json'))
+    save_config(variable_settings, os.path.join(args.job_dir, 'variable_settings.json'))
 
   this_setting.update(static_settings)
   
@@ -106,7 +105,9 @@ if __name__ == "__main__":
   #=== Settings Specified at Runtime ===#
   if 'n_cores' in this_setting:
     raise ValueError('`n_cores` should be specified through the shell script directly, not in the .json files.')
-  this_setting['n_cores'] = args.n_cores,
+  this_setting['n_cores'] = args.n_cores[0] \
+                            if isinstance(args.n_cores, (tuple, list)) \
+                            else args.n_cores
   
   if 'run_dir' in this_setting:
     raise ValueError('`run_dir` is decided at runtime dynamically by the hypertune script.')
@@ -121,7 +122,7 @@ if __name__ == "__main__":
     'sample_pairing',
     'no_downsample',
     'preload_melspecs'
-  ]}
+  ] if k in this_setting}
   
   model_config = {k: this_setting[k] for k in [
     'model_class',
@@ -135,7 +136,7 @@ if __name__ == "__main__":
     'num_accents',
     'stack_factor',
     'dropout_rate'
-  ]}
+  ] if k in this_setting}
 
   train_config = {k: this_setting[k] for k in [
     'epochs',
@@ -146,6 +147,12 @@ if __name__ == "__main__":
     'DAL_weight',
     'OAL_weight',
     'att_weight_decay',
+    'tcvae_alpha',
+    'tcvae_beta',
+    'tcvae_gamma',
+    'n_thaw_layers',
+    'ft_warmup_prop',
+    'ft_thaw_prop',
     'test_interval',
     'melspec_interval',
     'max_test_batches',
@@ -153,7 +160,10 @@ if __name__ == "__main__":
     'checkpoint_interval',
     'checkpoint_max',
     'from_checkpoint'
-  ]}
+  ] if k in this_setting}
+  
+  for name, config in zip(['DATA', 'MODEL', 'TRAIN'], [dataset_config, model_config, train_config]):
+    print(f'\n\n{name}\n\n{config}')
   
   # Save configs to the run directory
   for name, config in zip(['dataset', 'model', 'train'], [dataset_config, model_config, train_config]):
