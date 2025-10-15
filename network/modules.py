@@ -224,13 +224,19 @@ class SpeakerInfoPredictor(KenkuModule):
     
     Y = self.out_layer(X_pool).squeeze(-1) # Remove empty frame dim
     
-    # Reparameterization trick
     mu = Y[:,0:2]  # Mean from the first two dimensions
     log_var = Y[:,2:4]  # Log-variance from the next two dimensions
-    std = torch.exp(0.5 * log_var)
-    eps = torch.randn_like(std)
-    z = mu + eps * std
     
+    # Sample using the reparameterization trick during training
+    if self.training:
+      std = torch.exp(0.5 * log_var)
+      eps = torch.randn_like(std)
+      z = mu + eps * std
+    # Sample as the means themselves during testing and inference
+    else:
+      z = mu
+      
+      
     info = torch.empty((batch_size, Y.shape[1] - 2), device=device, dtype=dtype)
     info[:,:2] = z
     info[:,2:] = Y[:,4:]  # Copy any remaining dimensions as-is
