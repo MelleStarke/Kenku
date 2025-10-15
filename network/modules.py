@@ -472,20 +472,24 @@ class KenkuAttention(KenkuModule):
     super(KenkuAttention, self).__init__()
     
   def apply_causal_mask(self, A):
-    n_src_frames, n_tgt_frames = A.shape
+    batch_size, n_src_frames, n_tgt_frames = A.shape
+    dtype, device = A.dtype, A.device
     
     # Mask-off all src-tgt frame combinations where the src-frame is later than the tgt-frame.
     # This disallows attending to src-frames 'in the future' and allows only previous frames, thereby making it causal.
-    mask = torch.triu(torch.ones_like(A))
+    mask = torch.triu(torch.ones(n_src_frames, n_tgt_frames, dtype=dtype, device=device))
     
     # Apply a limit to how far the tgt-frames are allowed to look into the past.
     # i.e. how many previous src-frames can be attended to.
-    view_limited_frames = n_tgt_frames - self.view_distance
-    vlf = view_limited_frames
-    vd = self.view_distance
+    vd = min(self.view_distance, n_tgt_frames - 1)
+    vlf = view_limited_frames = n_tgt_frames - vd
     
-    limit_mask = torch.triu(torch.ones(vlf, vlf), dtype=A.dtype, device=A.device)
-    mask[:vd+1, vlf-1:] = mask[:vd+1, vlf-1:] - limit_mask
+    limit_mask = torch.triu(torch.ones(min(vlf, n_src_frames), min(vlf, n_tgt_frames), dtype=A.dtype, device=A.device))
+    target = mask[:n_tgt_frames - vd, vd:]
+    target_shape = target.shape
+    limit_mask_shape = limit_mask.shape
+    mask[:vlf, vd:] = mask[:n_tgt_frames - vd, vd:] - limit_mask
+    mask = mask.expand(batch_size, -1, -1)
     
     masked_A = mask * A
     return masked_A
@@ -586,8 +590,9 @@ if __name__ == "__main__":
     'embed',
     'att pred',
     'encode embed',
-    'masked pool'
-  ][0]
+    'masked pool',
+    'causal attention'
+  ][4]
   
   batch_size  = 4
   in_ch       = 5
@@ -595,7 +600,7 @@ if __name__ == "__main__":
   out_ch      = 3
   embed_ch    = 2
   num_accents = 11
-  timesteps   = 32
+  timesteps   = 60
   
   
   if mode == 'embed':
@@ -608,7 +613,7 @@ if __name__ == "__main__":
     
     [print(batch) for batch in [age_batch, gender_batch, accent_batch]]
     
-    emb = KenkuEmbedding(6)
+    emb = KenkuEmbedding(num_accents, 6)
     
     e = emb(age_batch, gender_batch, accent_batch)
     
@@ -745,3 +750,34 @@ if __name__ == "__main__":
     
     print(f'Staggered Mask: {mgp(X, mask)}')
     
+  if mode == 'causal attention':
+    n_frames = 16
+    att = KenkuAttention(view_distance=12)
+    
+    for add_frame in range(1, 6):
+      m_frames = n_frames + add_frame
+      masked_gauss_dist_mat = torch.zeros((1, n_frames, m_frames), dtype=float, device=device)
+        
+      # Nr. of "masked on" frames. i.e. frames with mask=1
+      n_src_frames_on = n_frames
+      m_tgt_frames_on = m_frames
+      
+      src_lin_vec = torch.arange(n_frames, device=device) / n_src_frames_on
+      tgt_lin_vec = torch.arange(m_frames, device=device) / m_tgt_frames_on
+      
+      src_vec_vstack = src_lin_vec.repeat(m_frames, 1).T
+      tgt_vec_hstack = tgt_lin_vec.repeat(n_frames, 1)
+      
+      masked_gauss_dist_mat[0,:,:] = 1. - torch.exp(-((src_vec_vstack - tgt_vec_hstack) ** 2) / (2. * 0.3 ** 2))
+      masked_gauss_dist_mat[0, n_src_frames_on:, m_tgt_frames_on:] = 0.
+
+      min_val, max_val = masked_gauss_dist_mat.min(), masked_gauss_dist_mat.max()
+      # Negate but keep the min and max values for better visualization
+      masked_gauss_dist_mat = (-masked_gauss_dist_mat) + max_val - min_val
+      
+      causal_masked_gauss_dist_mat = att.apply_causal_mask(masked_gauss_dist_mat)
+
+      fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+      axes[0].imshow(masked_gauss_dist_mat[0].cpu().numpy(), vmin=min_val, vmax=max_val)
+      axes[1].imshow(causal_masked_gauss_dist_mat[0].cpu().numpy(), vmin=min_val, vmax=max_val)
+      plt.show()
