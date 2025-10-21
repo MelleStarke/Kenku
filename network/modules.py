@@ -473,7 +473,7 @@ class ConvGLU(KenkuModule):
 #########################
 
 class KenkuAttention(KenkuModule):
-  def __init__(self, view_distance: Optional[int]=32):
+  def __init__(self, view_distance: Optional[int]=64):
     self.view_distance = view_distance
     super(KenkuAttention, self).__init__()
     
@@ -531,7 +531,7 @@ class AttentionPredictor(KenkuAttention):
                signal_segment_len: int = 80,  # TODO: Currently unused
                dilations: Optional[List[int]] = None,
                dropout_rate: Optional[float] = 0.2,
-               view_distance: Optional[int] = 32,
+               view_distance: Optional[int] = 64,
                rng: Union[torch.Generator, int] = None):
       super(AttentionPredictor, self).__init__(view_distance=view_distance)
       

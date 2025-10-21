@@ -50,7 +50,7 @@ DATASET_CONFIG_KEYS = ['dataset_dir', 'n_cores', 'min_samples', 'train_set_thres
                         'no_downsample','preload_melspecs']
 
 MODEL_CONFIG_KEYS = ['model_class', 'drl', 'from_teacher', 'in_ch', 'conv_ch', 'att_ch', 'out_ch', 
-                      'embed_ch', 'num_accents', 'stack_factor', 'dropout_rate']
+                      'embed_ch', 'num_accents', 'stack_factor', 'dropout_rate', 'view_distance']
 
 TRAIN_CONFIG_KEYS = ['epochs', 'batch_size', 'main_loss', 'learning_rate', 'adam_betas', 'DAL_weight', 'OAL_weight', 'att_weight_decay', 
                       'tcvae_alpha', 'tcvae_beta', 'tcvae_gamma', 'n_thaw_layers', 'ft_warmup_prop', 'ft_thaw_prop',
@@ -552,14 +552,17 @@ def main():
                       help='Nr. of attention channels.')
   parser.add_argument('--out-ch', type=int, default=80, metavar='INT',
                       help='Nr. of output (i.e. frequency) channels.')
-  parser.add_argument('--embed-ch', type=int, default=32, metavar='INT',
+  parser.add_argument('--embed-ch', type=int, default=16, metavar='INT',
                       help='Nr. of speaker info embedding channels.')
   parser.add_argument('--num-accents', type=int, default=11, metavar='INT',
                       help='Nr. of unique accents present in the data.')
   parser.add_argument('--stack-factor', '-sf', type=int, default=4, metavar='INT',
                       help='Stacking factor used for frame stacking. Reduces signal length by the same factor.')
   parser.add_argument('--dropout-rate', '-dor', type=float, default=0.2, metavar='FLOAT',
-                      help='Dropout rate for the linear input layers.\n\n\n')
+                      help='Dropout rate for the linear input layers.')
+  parser.add_argument('--view-distance', type=int, default=64, metavar='INT',
+                      help='How many source speaker frames prior to the target frame that ' \
+                           'the attention mechanism is allowed to attend to. Defaults to 64.\n\n\n')
   
   
   parser.add_argument('--train-config-path', type=str, default="", metavar='STR',
@@ -581,7 +584,7 @@ def main():
                       help='Starting value of the orthogonal attention loss weight.')
   parser.add_argument('--att-weight-decay', '-wad', type=float, default=None, metavar='FLOAT',
                       help='Decay rate for the diagonal attention loss weight. Defaults to 4 / epochs. ' 
-                            'Decay steps are done through wda <- wda * exp(-epoch * wda_decay).')
+                           'Decay steps are done through wda <- wda * exp(-epoch * wda_decay).')
   parser.add_argument('--tcvae-alpha', type=float, default=1.0, metavar='FLOAT',
                       help='Weight of the Index-Code Mutual Information loss term for beta-TCVAE.')
   parser.add_argument('--tcvae-beta', type=float, default=1.0, metavar='FLOAT',

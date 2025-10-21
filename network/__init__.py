@@ -187,6 +187,7 @@ class KenkuModel(KenkuModule):
                dilations: Optional[List[int]] = None,
                dropout_rate: Optional[float] = 0.2,
                stack_factor: int = 4,
+               view_distance: int = 64,
     ):
     super(KenkuModel, self).__init__()
     
@@ -206,7 +207,7 @@ class KenkuModel(KenkuModule):
     self.tgt_encoder = KameBlock(
       in_ch * sf, conv_ch, att_ch, embed_ch, num_accents, **kame_block_kwargs
     )
-    self.attention = ScaledDotProductAttention()
+    self.attention = ScaledDotProductAttention(view_distance=view_distance)
     
     self.decoder = KameBlock(
       att_ch, conv_ch, out_ch * sf, embed_ch, num_accents, **kame_block_kwargs
@@ -311,7 +312,8 @@ class KenkuTeacher(KenkuModel):
                kernel_size: Optional[int] = 5,
                dilations: Optional[List[int]] = None,
                dropout_rate: Optional[float] = 0.2,
-               stack_factor: int = 4
+               stack_factor: int = 4,
+               view_distance: int = 64
     ):
     super(KenkuTeacher, self).__init__(
       in_ch, conv_ch, att_ch, out_ch, embed_ch, num_accents,              
@@ -319,7 +321,8 @@ class KenkuTeacher(KenkuModel):
       kernel_size          = kernel_size,
       dilations            = dilations,
       dropout_rate         = dropout_rate,
-      stack_factor         = stack_factor
+      stack_factor         = stack_factor,
+      view_distance        = view_distance
     )
     
     self._init_args = (in_ch, conv_ch, att_ch, out_ch, embed_ch, num_accents)
@@ -328,7 +331,8 @@ class KenkuTeacher(KenkuModel):
       'kernel_size'         : kernel_size,
       'dilations'           : dilations,
       'dropout_rate'        : dropout_rate,
-      'stack_factor'        : stack_factor
+      'stack_factor'        : stack_factor,
+      'view_distance'       : view_distance
     }
     
   def forward(self, src_mel, tgt_mel, src_info, tgt_info, stack=True):
@@ -421,6 +425,7 @@ class KenkuStudent(KenkuModel):
                dilations: Optional[List[int]] = None,
                dropout_rate: Optional[float] = 0.2,
                stack_factor: int = 4,
+               view_distance: int = 64,
                rng: Union[torch.Generator, int] = None):
     
     super(KenkuStudent, self).__init__(
@@ -429,7 +434,8 @@ class KenkuStudent(KenkuModel):
       kernel_size          = kernel_size,
       dilations            = dilations,
       dropout_rate         = dropout_rate,
-      stack_factor         = stack_factor
+      stack_factor         = stack_factor,
+      view_distance        = view_distance
     )
     
     self.attention_predictor = AttentionPredictor(
@@ -438,6 +444,7 @@ class KenkuStudent(KenkuModel):
       kernel_size          = kernel_size,
       dilations            = dilations,
       dropout_rate         = dropout_rate,
+      view_distance        = view_distance,
       rng                  = rng
     )
     
@@ -604,7 +611,8 @@ class DRLKenkuTeacher(KenkuTeacher, DRLLossMixin):
                kernel_size: Optional[int] = 5,
                dilations: Optional[List[int]] = None,
                dropout_rate: Optional[float] = 0.2,
-               stack_factor: int = 4):
+               stack_factor: int = 4,
+               view_distance: int = 64):
     
     super(DRLKenkuTeacher, self).__init__(
       in_ch, conv_ch, att_ch, out_ch, embed_ch, num_accents,              
@@ -612,7 +620,8 @@ class DRLKenkuTeacher(KenkuTeacher, DRLLossMixin):
       kernel_size          = kernel_size,
       dilations            = dilations,
       dropout_rate         = dropout_rate,
-      stack_factor         = stack_factor
+      stack_factor         = stack_factor,
+      view_distance        = view_distance
     )
     
     self.speaker_info_predictor = SpeakerInfoPredictor(
@@ -719,6 +728,7 @@ class DRLKenkuStudent(KenkuStudent):
                dilations: Optional[List[int]] = None,
                dropout_rate: Optional[float] = 0.2,
                stack_factor: int = 4,
+               view_distance: int = 64,
                rng: Union[torch.Generator, int] = None):
     
     super(DRLKenkuStudent, self).__init__(
@@ -727,7 +737,8 @@ class DRLKenkuStudent(KenkuStudent):
       kernel_size          = kernel_size,
       dilations            = dilations,
       dropout_rate         = dropout_rate,
-      stack_factor         = stack_factor
+      stack_factor         = stack_factor,
+      view_distance        = view_distance
     )
     
     self.speaker_info_predictor = SpeakerInfoPredictor(

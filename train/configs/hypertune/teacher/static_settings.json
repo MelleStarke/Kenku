@@ -11,8 +11,9 @@
   "embed_ch": 16,
   "dropout_rate": 0.2,
 
-  "epochs": 100,
-  "batch_size": 600,
+  "epochs": 120,
+  "batch_size": 801,
+  "learning_rate": 1e-6,
   "att_weight": 2000,
   "test_interval": 100,
   "melspec_interval": 200,

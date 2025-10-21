@@ -32,7 +32,8 @@ shorthand_setting_names = {
   'conv_ch': 'cch',
   'att_ch': 'ach',
   'out_ch': 'och',
-  'embed_ch': 'ech'
+  'embed_ch': 'ech',
+  'view_distance': 'avd'
 }
 
 def get_setting(config_dict, idx):
@@ -103,6 +104,11 @@ if __name__ == "__main__":
       
   else:
     raise ValueError('You need to specify the diagonal and orthogonal attention loss weights in tandem with `att_weight`.')
+  
+  #=== Account for View Distance and STack Factor ===#
+  # By stacking frames, we essentally increase the view distance by that amount.
+  # Therefore, we need to reduce the view distance by the stack factor to retain comparability.
+  this_setting['view_distance'] = this_setting['view_distance'] // this_setting['stack_factor']
   
   #=== Settings Specified at Runtime ===#
   if 'n_cores' in this_setting:
