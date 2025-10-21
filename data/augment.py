@@ -153,7 +153,8 @@ def get_augment_fns(model_type: str = 'teacher'):
       model_type: Type of model ('teacher' or 'student')
   """
   model_type = model_type.lower()
-  if model_type in ['t' 'tea', 'teacher']:  
+  
+  if 'teacher' in model_type:  
     train_clip      = AlignedRandomClip()
     train_time_warp = RandomStretchedTimeWarp()
     
@@ -166,7 +167,7 @@ def get_augment_fns(model_type: str = 'teacher'):
     # Returning None as the augment_fn will result in unaugmented data in data.load.augment_collate_fn()
     return train_augment_fn, None
   
-  elif model_type in ['s', 'stu', 'student']:
+  elif 'student' in model_type:
     train_clip      = AlignedRandomClip(keep_aligned=True)
     train_time_warp = RandomStretchedTimeWarp()
     
@@ -326,46 +327,6 @@ class AlignedRandomClip(MelspecTransform):
     clipped_tgt = tgt_mel[..., tgt_start:tgt_end]     
     
     return clipped_src, clipped_tgt
-
-      
-    # path_length = len(path)
-    # max_clip = int(self.max_clip_ratio * path_length)
-    
-    # max_attempts = 100
-    # for attempt in range(max_attempts):
-    # # Try to find a correct clipping
-    #   n_clipped_steps = rng.integers(max_clip)
-    #   start_idx = rng.integers(n_clipped_frames)
-    #   end_idx = path_length - n_clipped_frames + start_idx
-      
-    #   # Get corresponding indices in original spectrograms
-    #   src_start, src_end = src_indices[start_idx], src_indices[end_idx]
-    #   tgt_start, tgt_end = tgt_indices[start_idx], tgt_indices[end_idx]
-      
-    #   # Check if the start indices are smaller than end indices
-    #   if src_end - src_start <= 0 or tgt_end - tgt_start <= 0:
-    #     continue  # Try again
-      
-    #   # Clip the spectrograms
-    #   clipped_src = src_mel[..., src_start:src_end]
-    #   clipped_tgt = tgt_mel[..., tgt_start:tgt_end]
-      
-    #   # Check if the frame dimension wasn't removed
-    #   if len(clipped_src.shape) < 2 or len(clipped_tgt.shape) < 2:
-    #     continue  # Try again
-      
-    #   clipped_src_ratio = clipped_src.shape[-1] / src_mel.shape[-1]
-    #   clipped_tgt_ratio = clipped_tgt.shape[-1] / tgt_mel.shape[-1]
-      
-    #   if    clipped_src_ratio < 1 - self.max_clip_ratio * 2 \
-    #      or clipped_src_ratio < 1 - self.max_clip_ratio * 2:
-    #        continue  # Try again
-    
-  # # Failsafe. Return unmodified spectrograms if no valid clipping was found.
-  # else:
-  #   logger.warning(f"Not able to find a correct clipping after {max_attempts} attempts.")
-  #   return src_mel, tgt_mel
-      
 
 
 class RandomStretchedTimeWarp(MelspecTransform):

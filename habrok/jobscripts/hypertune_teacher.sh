@@ -4,13 +4,13 @@
 #SBATCH --partition gpu
 #SBATCH --cpus-per-task 25
 #SBATCH --mem-per-cpu 2G
-#SBATCH --time 0-8:00:00
+#SBATCH --time 0-12:00:00
 #SBATCH --nodes 1
 #SBATCH --gpus-per-node=1
-#SBATCH --array=1-36
+#SBATCH --array=1-24
 
-#SBATCH --job-name="hypertune_teacher"
-#SBATCH --output="/home3/s4984218/Kenku/habrok/jobscripts/results/hypertune_teacher/%j.out"
+#SBATCH --job-name="hypertune_teacher_unaligned"
+#SBATCH --output="/home3/s4984218/Kenku/habrok/jobscripts/results/hypertune_teacher/aunligned/long/%j.out"
 
 module purge
 
@@ -23,6 +23,6 @@ echo "Running script"
 date +"%H:%M:%S"
 
 cd ~/Kenku
-srun python -m train.hypertune ./train/configs/hypertune/teacher ~/scratch/runs/hypertune_teacher/$SLURM_ARRAY_JOB_ID/ $SLURM_ARRAY_TASK_ID --n-cores $SLURM_CPUS_PER_TASK 
+srun python -m train.hypertune ./train/configs/hypertune/teacher ~/scratch/runs/hypertune_teacher/unaligned_$SLURM_ARRAY_JOB_ID/ $SLURM_ARRAY_TASK_ID --n-cores $SLURM_CPUS_PER_TASK 
 
 echo "Finished training"
