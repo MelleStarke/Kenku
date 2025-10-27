@@ -187,7 +187,7 @@ class SpeakerInfoMixin:
 class ParallelDatasetFactory(SpeakerInfoMixin):
   def __init__(self, 
                dataset_dir: str = '../Data/processed/VCTK/',
-               age_bounds = (10, 80),
+               age_bounds = (10, 40),
                rng: Optional[np.random.Generator] = None
   ):
     self.age_bounds = age_bounds
