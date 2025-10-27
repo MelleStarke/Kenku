@@ -49,7 +49,7 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 DATASET_CONFIG_KEYS = ['dataset_dir', 'n_cores', 'min_samples', 'train_set_threshold', 'sample_pairing',
                         'no_downsample','preload_melspecs']
 
-MODEL_CONFIG_KEYS = ['model_class', 'drl', 'from_teacher', 'in_ch', 'conv_ch', 'att_ch', 'out_ch', 
+MODEL_CONFIG_KEYS = ['model_class', 'drl', 'from_teacher', 'num_conv_layers', 'in_ch', 'conv_ch', 'att_ch', 'out_ch', 
                       'embed_ch', 'num_accents', 'stack_factor', 'dropout_rate', 'view_distance']
 
 TRAIN_CONFIG_KEYS = ['epochs', 'batch_size', 'main_loss', 'learning_rate', 'adam_betas', 'DAL_weight', 'OAL_weight', 'att_weight_decay', 
@@ -517,18 +517,20 @@ def main():
                       help='Optional path to a dataset config file (.json). Used instead of parsed arguments.\n\n')
   
   parser.add_argument('--dataset-dir', type=str, default='../Data/processed/VCTK', metavar='STR',
-                      help="Directory containing the 'melspec' and 'transcript' folders, and 'speaker_info.csv'.")
+                      help="Directory containing the 'melspec' and 'transcript' folders, and 'speaker_info.csv'. Defaults to ../Data/processed/VCTK.")
   parser.add_argument('--n-cores', type=int, default=None, metavar='INT',
                       help="Nr. of cores used for parallelization by the DataLoader. Defaults to os.cpu_count().")
-  parser.add_argument('--min-samples', type=int, default=8, metavar='INT',
-                      help='Minimum number of samples for a transcript to be included in the train-/testset.')
+  parser.add_argument('--min-samples', type=int, default=7, metavar='INT',
+                      help='Minimum number of samples for a transcript to be included in the train-/testset. Defaults to 7')
   parser.add_argument('--train-set-threshold', type=int, default=10, metavar='INT',
                       help='Cut-off point for transcript samples between train and test set. ' 
-                            'All transcripts whose nr. of samples are below this threshold are part of the test set. All others of the train set.')
+                            'All transcripts whose nr. of samples are below this threshold are part of the test set. All others of the train set. '
+                            'Defaults to 10.')
   parser.add_argument('--sample-pairing', nargs='?', type=str, default=['product', 'random'], metavar='STR',
                       help=('How samples are paired into source and target. Choose `product` for the Cartesian product. ' 
                             'Choose `random` to randomly pair a source sample to every target sample. ' 
-                            'You can also specify it separately for the train and test set respectively. e.g. "--sample-pairing product random".'))
+                            'You can also specify it separately for the train and test set respectively. e.g. "--sample-pairing product random". '
+                            'Defaults to product for train set and random for test set.'))
   parser.add_argument('--no-downsample', action='store_true',
                       help='Disable downsampling of sentence samples. Results in skewed data but may not be an issue.')
   parser.add_argument('--preload-melspecs', action='store_true',
@@ -539,27 +541,31 @@ def main():
                       help='Optional path to a model config file (.json). Used instead of parsed arguments.\n\n')
   
   parser.add_argument('--model-class', '-m', type=str, default='KenkuTeacher', metavar='STR',
-                      help='Class of the model you wish to train: KenkuTeacher or KenkuStudent.')
+                      help='Class of the model you wish to train: (Kenku)Teacher, (Kenku)Student, DRL(Kenku)Teacher, or DRL(Kenku)Student. '
+                           'Defaults to KenkuTeacher.')
   parser.add_argument('--drl', action='store_true',
                       help='Enable Disentangled Representation Learning.')
   parser.add_argument('--from-teacher', type=str, default=None, metavar='STR',
                       help='Path to teacher checkpoint from which to create the student model.')
+  parser.add_argument('--num-conv-layers', type=int, default=8, metavar='INT',
+                      help='Nr. of convolutional layers in each KameBlock. '
+                           'The SpeakerInfoPredictor ignores this value. Defaults to 8.')
   parser.add_argument('--in-ch', type=int, default=80, metavar='INT',
-                      help='Nr. of input (i.e. frequency) channels.')
+                      help='Nr. of input (i.e. frequency) channels. Defaults to 80.')
   parser.add_argument('--conv-ch', type=int, default=128, metavar='INT',
-                      help='Nr. of convolutional channels.')
+                      help='Nr. of convolutional channels. Defaults to 128.')
   parser.add_argument('--att-ch', type=int, default=128, metavar='INT',
-                      help='Nr. of attention channels.')
+                      help='Nr. of attention channels. Defaults to 128.')
   parser.add_argument('--out-ch', type=int, default=80, metavar='INT',
-                      help='Nr. of output (i.e. frequency) channels.')
+                      help='Nr. of output (i.e. mel) channels. Defaults to 80.')
   parser.add_argument('--embed-ch', type=int, default=16, metavar='INT',
-                      help='Nr. of speaker info embedding channels.')
+                      help='Nr. of speaker info embedding channels. Defaults to 16.')
   parser.add_argument('--num-accents', type=int, default=11, metavar='INT',
-                      help='Nr. of unique accents present in the data.')
+                      help='Nr. of unique accents present in the data. Defaults to 11.')
   parser.add_argument('--stack-factor', '-sf', type=int, default=4, metavar='INT',
-                      help='Stacking factor used for frame stacking. Reduces signal length by the same factor.')
+                      help='Stacking factor used for frame stacking. Reduces signal length by the same factor. Defaults to 4.')
   parser.add_argument('--dropout-rate', '-dor', type=float, default=0.2, metavar='FLOAT',
-                      help='Dropout rate for the linear input layers.')
+                      help='Dropout rate for the linear input layers. Defaults to 0.2.')
   parser.add_argument('--view-distance', type=int, default=64, metavar='INT',
                       help='How many source speaker frames prior to the target frame that ' \
                            'the attention mechanism is allowed to attend to. Defaults to 64.\n\n\n')
@@ -569,52 +575,53 @@ def main():
                       help='Optional path to a training config file (.json). Used instead of parsed arguments.\n\n')
   
   parser.add_argument('--epochs', type=int, default=20, metavar='INT',
-                      help='Nr. of epochs over the dataset.')
+                      help='Nr. of epochs over the dataset. Defaults to 20.')
   parser.add_argument('--batch-size', '-bs', type=int, default=32, metavar='INT',
-                      help='Batch size.')
+                      help='Batch size. Defaults to 32.')
   parser.add_argument('--main-loss', type=str, default='mse', metavar='STR',
-                      help='Main spectrogram loss function. MSE or MAE.')
+                      help='Main spectrogram loss function. MSE or MAE. Defaults to MSE.')
   parser.add_argument('--learning-rate', '-lr', type=float, default=1e-6, metavar='FLOAT',
-                      help='Learning rate.')
+                      help='Learning rate. Defaults to 1e-6')
   parser.add_argument('--adam-betas', type=float, nargs=2, default=[0.9, 0.999],  metavar='FLOAT',
-                      help='Betas use for the Adam optimizer.')
+                      help='Betas use for the Adam optimizer. Defaults to 0.9 and 0.999.')
   parser.add_argument('--DAL-weight', '-wda', type=float, default=2000., metavar='FLOAT',
-                      help='Starting value of the diagonal attention loss weight.')
+                      help='Starting value of the diagonal attention loss weight. Defaults to 2000.')
   parser.add_argument('--OAL-weight', '-woa', type=float, default=2000., metavar='FLOAT',
-                      help='Starting value of the orthogonal attention loss weight.')
+                      help='Starting value of the orthogonal attention loss weight. Defaults to 2000.')
   parser.add_argument('--att-weight-decay', '-wad', type=float, default=None, metavar='FLOAT',
                       help='Decay rate for the diagonal attention loss weight. Defaults to 4 / epochs. ' 
                            'Decay steps are done through wda <- wda * exp(-epoch * wda_decay).')
   parser.add_argument('--tcvae-alpha', type=float, default=1.0, metavar='FLOAT',
-                      help='Weight of the Index-Code Mutual Information loss term for beta-TCVAE.')
+                      help='Weight of the Index-Code Mutual Information loss term for beta-TCVAE. Defaults to 1.')
   parser.add_argument('--tcvae-beta', type=float, default=1.0, metavar='FLOAT',
-                      help='Weight of the Total Correlation loss term for beta-TCVAE.')
+                      help='Weight of the Total Correlation loss term for beta-TCVAE. Defaults to 1.')
   parser.add_argument('--tcvae-gamma', type=float, default=1.0, metavar='FLOAT',
-                      help='Weight of the Dimension-wise KL Divergence loss term for beta-TCVAE.')
+                      help='Weight of the Dimension-wise KL Divergence loss term for beta-TCVAE. Defaults to 1.')
   parser.add_argument('--n-thaw-layers', type=int, default=None, metavar='INT',
                       help='How many of the tranferred layers (from teacher to student) should be gradually thawed and finetuned. ' \
-                           'Starting with the speaker_info_predictor (if present), decoder, then src_encoder. From the last to the first layer.')
+                           'Starting with the speaker_info_predictor (if present), decoder, then src_encoder. From the last to the first layer. '
+                           'If none, all layers are thawed. Defaults to none.')
   parser.add_argument('--ft-warmup-prop', type=float, default=0.1, metavar='FLOAT',
                       help='If thawing transferred layers, define how many steps the model gets to \'warm up\' ' \
-                           'before beginning to thaw, as a proportion of the total number of training steps.')
+                           'before beginning to thaw, as a proportion of the total number of training steps. Defaults to 0.1.')
   parser.add_argument('--ft-thaw-prop', type=float, default=0.5, metavar='FLOAT',
                       help='If thawing transferred layers, define how many steps the model gets to thaw them, ' \
-                           'as a proportion of the total number of training steps.')
+                           'as a proportion of the total number of training steps. Defaults to 0.5.')
   parser.add_argument('--test-interval', type=int, default=200, metavar='INT',
-                      help='Amount of update steps between every test loss calculation.')
+                      help='Amount of update steps between every test loss calculation. Defaults to 200.')
   parser.add_argument('--melspec-interval', type=int, default=500, metavar='INT',
-                      help='Amount of update steps between each visualisation of test melspecs and attention matrices.')
+                      help='Amount of update steps between each visualisation of test melspecs and attention matrices. Defaults to 500.')
   parser.add_argument('--max-test-batches', type=int, default=100, metavar='INT',
-                      help='Max nr. of batches to calculate the test loss over')
+                      help='Max nr. of batches to calculate the test loss over. Defaults to 100.')
   parser.add_argument('--run-dir', type=str, default=None, metavar='STR',
                       help=('Directory to store run data in. Includes both Tensorboard logs and checkpoints. ' 
                             'Defaults to `Kenku/train/runs/{--model-class}/{<datetime>}`. ' 
                             'Where <datetime> is the date and time at script execution. Checkpoints include both model and optimizer params.'))
   parser.add_argument('--checkpoint-interval', type=int, default=500, metavar='INT',
-                      help='Amount of update steps between each checkpoint.')
-  parser.add_argument('--checkpoint-max', type=int, default=6, metavar='INT',
+                      help='Amount of update steps between each checkpoint. Defaults to 500.')
+  parser.add_argument('--checkpoint-max', type=int, default=5, metavar='INT',
                       help='Maximum number of checkpoints saved on disk. One is reserved for the latest checkpoint. ' 
-                           'The rest for the checkpoints with the lowest test loss.')
+                           'The rest for the checkpoints with the lowest test loss. Defaults to 5.')
   parser.add_argument('--from-checkpoint', type=str, default=None, metavar='STR',
                       help='Path pointing to a checkpoint file. If specified, continue training from this checkpoint.')
   parser.add_argument('--no-log', action='store_true',

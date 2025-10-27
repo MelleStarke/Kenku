@@ -1,6 +1,5 @@
 {
-  "hidden_ch": [64, 80, 128],
-  "stack_factor": [1, 2],
-  "att_weight_decay": [0.04, 0.01],
-  "view_distance": [64, 128]
+  "hidden_ch": [512, 256, 128],
+  "num_conv_layers": [12, 10, 8],
+  "att_weight_decay": [0.04, 0.02]
 }

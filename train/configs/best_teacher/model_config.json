@@ -1,12 +1,14 @@
 {
     "model_class": "KenkuTeacher",
+    "drl": false,
     "from_teacher": null,
     "in_ch": 80,
     "conv_ch": 128,
     "att_ch": 128,
     "out_ch": 80,
-    "embed_ch": 32,
+    "embed_ch": 16,
     "num_accents": 11,
     "stack_factor": 1,
-    "dropout_rate": 0.2
+    "dropout_rate": 0.2,
+    "view_distance": 128
 }
