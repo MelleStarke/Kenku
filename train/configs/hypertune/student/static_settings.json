@@ -7,18 +7,24 @@
         "random"
     ],
   
-    "model_class": "DRLKenkuTeacher",
+    "model_class": "KenkuStudent",
+    "from_teacher": "/home3/s4984218/scratch/runs/teacher/tuned/unaligned_from_24716513_24938960/checkpoints/epoch499_batch0_loss0.1212.pt",
     "in_ch": 80,
     "out_ch": 80,
+    "hidden_ch": 128,
+    "embed_ch": 16,
     "num_accents": 11,
     "dropout_rate": 0.2,
+    "stack_factor": 1,
 
-    "epochs": 50,
+    "epochs": 100,
     "main_loss": "mse",
     "batch_size": 600,
-    "test_interval": 70,
-    "melspec_interval": 70,
-    "max_test_batches": 200,
-    "checkpoint_interval": 999,
-    "checkpoint_max": 2
+    "att_weight": 2000,
+    "att_weight_decay": 0.04,
+    "view_distance": 128,
+    "test_interval": 100,
+    "melspec_interval": 200,
+    "max_test_batches": 100,
+    "checkpoint_max": 0
 }

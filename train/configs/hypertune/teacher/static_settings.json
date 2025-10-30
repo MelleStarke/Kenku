@@ -14,7 +14,7 @@
   "view_distance": 128,
 
   "epochs": 100,
-  "batch_size": 300,
+  "batch_size": 200,
   "learning_rate": 1e-6,
   "att_weight": 2000,
   "test_interval": 100,

@@ -1,9 +1,6 @@
 {
-    "hidden_ch": [64, 80, 128],
-    "embed_ch": [16, 32],
-    "stack_factor": [1, 2],
-    
     "learning_rate": [1e-06, 1e-7],
-    "att_weight": [200.0, 500.0, 1000.0],
-    "DAL_weight_decay": [0.08, 0.02, 0.0]
+    "n_thaw_layers": [11, 12, 14],
+    "ft_warmup_prop": [0.1, 0,3],
+    "ft_thaw_prop": [0.3, 0.5, 0.7]
 }
