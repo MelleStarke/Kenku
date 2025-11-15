@@ -215,10 +215,17 @@ class KenkuModel(KenkuModule):
   
   def stack_mels(self, *mels):
     if self.stack_factor > 1:
-      mels = tuple(stack_frames(mel, self.stack_factor) for mel in mels)
-      if len(mels) == 1:
-        return mels[0]
-      return mels
+      if isinstance(mels, (tuple, list)):
+        mels = tuple(stack_frames(mel, self.stack_factor) for mel in mels)
+        if len(mels) == 1:
+          return mels[0]
+      
+      if is_tensor(mels):
+        return stack_frames(mels, self.stack_factor)
+
+      else:
+        raise TypeError(f"Expected tensor or tuple/list of tensors, but got {type(mels)}.")
+      
     return mels
   
   def stack_masks(self, *masks):
@@ -449,8 +456,12 @@ class KenkuStudent(KenkuModel):
     )
     
   def forward(self, src_mel, src_info, tgt_info, stack = True):   
+    if isinstance(src_mel, tuple):
+      print()
     if stack:
       src_mel = self.stack_mels(src_mel)
+      if isinstance(src_mel, tuple):
+        print()
       
     _, V = self.src_encoder(src_mel, src_info)
     pred_A, _, _ = self.attention_predictor(src_mel, tgt_info)

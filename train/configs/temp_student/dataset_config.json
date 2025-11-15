@@ -1,0 +1,12 @@
+{
+    "dataset_dir": "../Data/processed/VCTK",
+    "n_cores": 12,
+    "min_samples": 7,
+    "train_set_threshold": 10,
+    "sample_pairing": [
+        "product",
+        "random"
+    ],
+    "no_downsample": false,
+    "preload_melspecs": false
+}

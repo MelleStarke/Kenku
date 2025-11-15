@@ -1,0 +1,13 @@
+{
+    "model_class": "KenkuStudent",
+    "drl": false,
+    "from_teacher": "/home/user/Uni/m3/thesis/project/Kenku/train/runs/kenkuteacher/25-10-13_16:23:48/checkpoints/epoch0_batch0_loss1.034.pt",
+    "in_ch": 80,
+    "conv_ch": 160,
+    "att_ch": 160,
+    "out_ch": 80,
+    "embed_ch": 32,
+    "num_accents": 11,
+    "stack_factor": 1,
+    "dropout_rate": 0.2
+}
