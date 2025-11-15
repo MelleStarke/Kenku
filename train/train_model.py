@@ -53,7 +53,7 @@ MODEL_CONFIG_KEYS = ['model_class', 'drl', 'from_teacher', 'num_conv_layers', 'i
                       'embed_ch', 'num_accents', 'stack_factor', 'dropout_rate', 'view_distance']
 
 TRAIN_CONFIG_KEYS = ['epochs', 'batch_size', 'main_loss', 'learning_rate', 'adam_betas', 'DAL_weight', 'OAL_weight', 'att_weight_decay', 
-                      'tcvae_alpha', 'tcvae_beta', 'tcvae_gamma', 'n_thaw_layers', 'ft_warmup_prop', 'ft_thaw_prop',
+                      'tcvae_alpha', 'tcvae_beta', 'tcvae_gamma', 'accent_entropy_weight', 'n_thaw_layers', 'ft_warmup_prop', 'ft_thaw_prop',
                       'test_interval', 'melspec_interval', 'max_test_batches', 'run_dir', 'checkpoint_interval', 
                       'checkpoint_max', 'from_checkpoint', 'no_log']
 
@@ -432,6 +432,7 @@ def train_model(model: KenkuModel,
                 OAL_weight: float       = 0.,
                 att_weight_decay: float = None,
                 drl_loss_weights: Optional[List[float]] = None,
+                accent_entropy_weight: Optional[float] = 1.0,
                 scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None):
 
   oom_handler = OOMHandler(model)
@@ -480,7 +481,8 @@ def train_model(model: KenkuModel,
         loss, A = model.calc_loss(*batch, 
                                   main_loss_fn=main_loss_fn, 
                                   att_loss_weights=att_loss_weights,
-                                  drl_loss_weights=drl_loss_weights)
+                                  drl_loss_weights=drl_loss_weights,
+                                  accent_entropy_weight=accent_entropy_weight)
       
       # If an OOM error occurred, continue to the next iteration to prevent weight update.
       if oom_handler.oom_occurred:
@@ -544,7 +546,7 @@ def main():
                       help='Class of the model you wish to train: (Kenku)Teacher, (Kenku)Student, DRL(Kenku)Teacher, or DRL(Kenku)Student. '
                            'Defaults to KenkuTeacher.')
   parser.add_argument('--drl', action='store_true',
-                      help='Enable Disentangled Representation Learning.')
+                      help='Enable Disentangled Representation Learning. Can also be implied from the model class arg.')
   parser.add_argument('--from-teacher', type=str, default=None, metavar='STR',
                       help='Path to teacher checkpoint from which to create the student model.')
   parser.add_argument('--num-conv-layers', type=int, default=8, metavar='INT',
@@ -579,7 +581,7 @@ def main():
   parser.add_argument('--batch-size', '-bs', type=int, default=32, metavar='INT',
                       help='Batch size. Defaults to 32.')
   parser.add_argument('--main-loss', type=str, default='mse', metavar='STR',
-                      help='Main spectrogram loss function. MSE or MAE. Defaults to MSE.')
+                      help='Spectrogram reconstruction loss function. MSE or MAE. Defaults to MSE.')
   parser.add_argument('--learning-rate', '-lr', type=float, default=1e-6, metavar='FLOAT',
                       help='Learning rate. Defaults to 1e-6')
   parser.add_argument('--adam-betas', type=float, nargs=2, default=[0.9, 0.999],  metavar='FLOAT',
@@ -597,6 +599,8 @@ def main():
                       help='Weight of the Total Correlation loss term for beta-TCVAE. Defaults to 1.')
   parser.add_argument('--tcvae-gamma', type=float, default=1.0, metavar='FLOAT',
                       help='Weight of the Dimension-wise KL Divergence loss term for beta-TCVAE. Defaults to 1.')
+  parser.add_argument('--accent-entropy-weight', type=float, default=1.0, metavar='FLOAT',
+                      help='Weight of the accent entropy term used to enforce one-hot encoding in the derived accent vector. Defaults to 1.')
   parser.add_argument('--n-thaw-layers', type=int, default=None, metavar='INT',
                       help='How many of the tranferred layers (from teacher to student) should be gradually thawed and finetuned. ' \
                            'Starting with the speaker_info_predictor (if present), decoder, then src_encoder. From the last to the first layer. '
@@ -694,6 +698,10 @@ def main():
   else:
     raise ValueError('Incorrect model class. Use `teacher` or `student`.')
   
+  if is_student:
+    assert model_config['from_teacher'] is not None, \
+      f"The student model expects `from_teacher` to point to a teacher checkpoint, but it is `None`."
+  
   model_init_args = model_config.copy()
   for remove_key in ['model_class', 'drl', 'from_teacher']:
     model_init_args.pop(remove_key)
@@ -750,7 +758,9 @@ def main():
   
   #=== Create Student from Teacher ===#
   
-  if model_config['from_teacher']:
+  use_thaw_scheduler = is_student and train_config['n_thaw_layers'] > 0
+  
+  if is_student:
     print(f"\n===== Student from Teacher =====")
     print(f'Time: {datetime.now().strftime("%H:%M:%S")}')
     teacher_checkpoint_path = model_config['from_teacher']
@@ -758,15 +768,15 @@ def main():
   
     model.load_teacher_state_dict(teacher_checkpoint['model'])
     
+    del(teacher_checkpoint)
+    gc.collect()
+    print(f"Successfully created student from teacher checkpoint at {teacher_checkpoint_path}.")
+    
+  if use_thaw_scheduler:
     # Create parameter groups for incremental and gradual thawing of transferred weights
     param_groups = group_student_params(model, 
                                         max_groups=train_config['n_thaw_layers'],
                                         format_for_optimizer=True)
-    
-    del(teacher_checkpoint)
-    gc.collect()
-  
-    print(f"Successfully created student from teacher checkpoint at {teacher_checkpoint_path}.")
   
   else:
     param_groups = model.parameters()
@@ -779,7 +789,7 @@ def main():
                                weight_decay = 0.01)
   
   # If a student model was created from a teacher, set up an incremental thaw scheduler
-  if model_config['from_teacher']:
+  if use_thaw_scheduler:
     total_steps = len(train_loader) * train_config['epochs']
     thaw_scheduler = IncrementalThawScheduler(optimizer, 
                                               total_steps=total_steps,
@@ -881,14 +891,15 @@ def main():
               checkpoint_manager,
               tensorboard_manager,
               
-              use_drl          = use_drl,
-              main_loss_fn     = train_config['main_loss'],
-              epochs           = train_config['epochs'],
-              DAL_weight       = train_config['DAL_weight'],
-              OAL_weight       = train_config['OAL_weight'],
-              att_weight_decay = train_config['att_weight_decay'],
-              drl_loss_weights = drl_loss_weights,
-              scheduler        = thaw_scheduler if model_config['from_teacher'] else None
+              use_drl               = use_drl,
+              main_loss_fn          = train_config['main_loss'],
+              epochs                = train_config['epochs'],
+              DAL_weight            = train_config['DAL_weight'],
+              OAL_weight            = train_config['OAL_weight'],
+              att_weight_decay      = train_config['att_weight_decay'],
+              drl_loss_weights      = drl_loss_weights,
+              accent_entropy_weight = train_config['accent_entropy_weight'],
+              scheduler             = thaw_scheduler if use_thaw_scheduler else None
               )
 
 if __name__ == '__main__':

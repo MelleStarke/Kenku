@@ -1,0 +1,14 @@
+{
+    "model_class": "DRKKenkuTeacher",
+    "drl": true,
+    "from_teacher": null,
+    "in_ch": 80,
+    "conv_ch": 80,
+    "att_ch": 80,
+    "out_ch": 80,
+    "embed_ch": 16,
+    "num_accents": 11,
+    "stack_factor": 1,
+    "dropout_rate": 0.2,
+    "view_distance": 128
+}

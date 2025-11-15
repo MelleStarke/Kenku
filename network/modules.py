@@ -236,10 +236,9 @@ class SpeakerInfoPredictor(KenkuModule):
     else:
       z = mu
       
-      
     info = torch.empty((batch_size, Y.shape[1] - 2), device=device, dtype=dtype)
     info[:,:2] = z
-    info[:,2:] = Y[:,4:]  # Copy any remaining dimensions as-is
+    info[:,2:] = F.softmax(Y[:,4:])  # Apply softmax to the accent dimensions
     
     return info, z, mu, log_var  # Return latent factors, mean, and log-variance
   
@@ -368,8 +367,23 @@ class KameBlock(KenkuModule):
     # Lazy init to allow for DRL embedding
     if self.embed_layer is None:
       self._init_embed_layer()
-    
-    batch_size, in_ch, timesteps = X.shape
+    try:
+      batch_size, in_ch, timesteps = X.shape
+    except AttributeError as e:
+      # print(f"X len: {len(X)}")
+      # for i, x in enumerate(X):
+      #   shape = x.shape if isinstance(x, (Tensor, np.ndarray)) else ""
+      #   print(f"ELEM: {i}/{len(X)}\n"
+      #         f"TYPE: {type(x)}\n"
+      #         f"SHAPE: {shape}\n"
+      #         f"VAL:\n{x}\n")
+      
+      # raise e
+      if isinstance(X, tuple) and len(X) == 1 and isinstance(X[0], Tensor):
+        X = X[0]
+        batch_size, in_ch, timesteps = X.shape
+      else:
+        raise e
     
     # Automatically warn and clear dynamic paddings if the batch sizes don't line up
     # between the stored paddings and the input batch.

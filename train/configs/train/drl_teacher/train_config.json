@@ -1,0 +1,24 @@
+{
+    "epochs": 500,
+    "batch_size": 600,
+    "main_loss": "mse",
+    "learning_rate": 1e-07,
+    "adam_betas": [
+        0.9,
+        0.999
+    ],
+    "DAL_weight": 2000,
+    "OAL_weight": 2000,
+    "att_weight_decay": 0.04,
+    "tcvae_alpha": 0,
+    "tcvae_beta": 200,
+    "tcvae_gamma": 1,
+    "accent_entropy_weight": 1,
+    "test_interval": 100,
+    "melspec_interval": 200,
+    "max_test_batches": 100,
+    "checkpoint_interval": 500,
+    "checkpoint_max": 5,
+    "from_checkpoint": null,
+    "no_log": false
+}

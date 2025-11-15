@@ -19,10 +19,11 @@
 
     "epochs": 100,
     "main_loss": "mse",
-    "batch_size": 600,
+    "batch_size": 500,
     "att_weight": 2000,
     "att_weight_decay": 0.04,
     "view_distance": 128,
+    "n_thaw_layers": 0,
     "test_interval": 100,
     "melspec_interval": 200,
     "max_test_batches": 100,
