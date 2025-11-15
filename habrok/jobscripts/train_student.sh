@@ -4,12 +4,12 @@
 #SBATCH --partition gpu
 #SBATCH --cpus-per-task 25
 #SBATCH --mem-per-cpu 2G
-#SBATCH --time 1-12:00:00
+#SBATCH --time 2-12:00:00
 #SBATCH --nodes 1
-#SBATCH --gpus-per-node=a100:1
+#SBATCH --gpus-per-node=1
 
-#SBATCH --job-name="train_kenkustudent"
-#SBATCH --output="/home3/s4984218/Kenku/habrok/jobscripts/results/train_student/%j.out"
+#SBATCH --job-name="train_student_final"
+#SBATCH --output="/home3/s4984218/Kenku/habrok/jobscripts/results/train_student/final/%j.out"
 
 module purge
 
@@ -20,16 +20,13 @@ echo "Script Contents"
 cat ~/Kenku/habrok/jobscripts/train_student.sh
 
 echo "Running script"
+date +"%H:%M:%S"
+
+# export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:64,garbage_collection_threshold:0.6
 
 cd ~/Kenku
-
-
-srun python -m train.train_model --model-class student --from-teacher ~/scratch/runs/teacher/tuned/18581929/checkpoints/epoch199_batch100_loss0.1792.pt --dataset-dir ~/scratch/processed -woa 200 -wda 200 --n-cores $SLURM_CPUS_PER_TASK --min-samples 7 --stack-factor 1 --conv-ch 128 --att-ch 128 -dor 0.2 --epochs 200 --main-loss mse --batch-size 600 --max-test-batches 20 --test-interval 50 --melspec-interval 50 --checkpoint-interval 100 --checkpoint-max 5 --learning-rate 1e-6 --run-dir ~/scratch/runs/student/$SLURM_JOB_ID
-# srun python -m train.train_model --dataset-dir ~/scratch/processed --preload-melspecs --n-cores $SLURM_CPUS_PER_TASK --min-samples 7 --stack-factor 1 --conv-ch 512 --att-ch 512 -dor 0.2 --epochs 20 --batch-size 64 --max-test-batches 150 --run-dir ~/scratch/runs/$SLURM_JOB_ID
-# srun python -m train.train_model --model-class student --from-teacher ~/scratch/runs/15714243/checkpoints/epoch49_batch0_loss0.5417.pt --dataset-dir ~/scratch/processed --n-cores $SLURM_CPUS_PER_TASK --min-samples 7 --stack-factor 4 --conv-ch 512 --att-ch 512 -dor 0.2 --epochs 20 --batch-size 128 --max-test-batches 100 --run-dir ~/scratch/runs/student/$SLURM_JOB_ID
+srun --export=ALL python -m train.train_model --config-dir /home3/s4984218/Kenku/train/configs/train/student --run-dir ~/scratch/runs/student/final/$SLURM_JOB_ID --n-cores $SLURM_CPUS_PER_TASK
 
 echo "Finished training"
 
-
-# python -m train.train_model --model-class student --from-teacher ~/scratch/runs/15714243/checkpoints/epoch49_batch0_loss0.5417.pt --dataset-dir ~/scratch/processed --n-cores 2 --min-samples 7 --stack-factor 4 --conv-ch 512 --att-ch 512 -dor 0.2 --epochs 20 --batch-size 128 --max-test-batches 100 --run-dir ~/scratch/runs/student/int_gpu1
-# --dataset-dir ../Data/processed/VCTK --n-cores 6 --min-samples 7 --stack-factor 4 --conv-ch 80 --att-ch 80 -dor 0.2 --epochs 20 --batch-size 18 --max-test-batches 60
+#================

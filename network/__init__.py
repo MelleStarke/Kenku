@@ -21,7 +21,8 @@ from train.loss import (mse_loss,
                         auxil_att_loss, 
                         diag_att_loss, 
                         ortho_att_loss, 
-                        beta_tcvae_loss_terms)
+                        beta_tcvae_loss_terms,
+                        accent_entropy_loss)
 
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -217,8 +218,10 @@ class KenkuModel(KenkuModule):
     if self.stack_factor > 1:
       mels = tuple(stack_frames(mel, self.stack_factor) for mel in mels)
       if len(mels) == 1:
-        return mels[0]
-      return mels
+        mels = mels[0]
+    
+    if isinstance(mels, tuple) and len(mels) == 1:
+      return mels[0]
     return mels
   
   def stack_masks(self, *masks):
@@ -568,7 +571,9 @@ class KenkuStudent(KenkuModel):
 
 class DRLLossMixin:
   def _calc_drl_loss(self, src_variational, tgt_variational, dataset_size,
-                     drl_loss_weights = None, as_components = False):
+                     drl_loss_weights = None, 
+                     accent_entropy_weight = 1.0, 
+                     as_components = False):
     
     src_info, src_z, src_mu, src_log_var = src_variational
     tgt_info, tgt_z, tgt_mu, tgt_log_var = tgt_variational
@@ -577,7 +582,10 @@ class DRLLossMixin:
     mi_loss, tc_loss, dw_kld_loss = torch.stack([
       torch.stack(beta_tcvae_loss_terms(src_z, src_mu, src_log_var, dataset_size)),
       torch.stack(beta_tcvae_loss_terms(tgt_z, tgt_mu, tgt_log_var, dataset_size))
-    ]).sum(dim=0)
+    ]).sum(dim=0) / 2
+    
+    # Calculate the entropy loss of the accent dimensions
+    entropy_loss = (accent_entropy_loss(src_info[2:]) + accent_entropy_loss(tgt_info[2:])) / 2
     
     if drl_loss_weights is None:
       drl_loss_weights = [1.0, 1.0, 1.0]
@@ -591,11 +599,12 @@ class DRLLossMixin:
         'drl loss': drl_loss,
         'mi loss': mi_loss,
         'tc loss': tc_loss,
-        'dw kld loss': dw_kld_loss
+        'dw kld loss': dw_kld_loss,
+        'acc entr loss': entropy_loss
       }
       return loss_components
 
-    return drl_loss
+    return drl_loss + entropy_loss * accent_entropy_weight
 
 
 class DRLKenkuTeacher(KenkuTeacher, DRLLossMixin):
@@ -661,6 +670,7 @@ class DRLKenkuTeacher(KenkuTeacher, DRLLossMixin):
                 oal_tgt_sigma = 0.3, 
                 att_loss_weights = None,
                 drl_loss_weights = None,
+                accent_entropy_weight = 1.0,
                 as_components = False):
     
     if att_loss_weights is not None:
@@ -690,6 +700,7 @@ class DRLKenkuTeacher(KenkuTeacher, DRLLossMixin):
     #=== DRL Loss Calculation ===#
     drl_loss = self._calc_drl_loss(src_variational, tgt_variational, dataset_size,
                                   drl_loss_weights = drl_loss_weights,
+                                  accent_entropy_weight = accent_entropy_weight,
                                   as_components = as_components)
     
     #=== Combine Loss ===#
@@ -780,6 +791,7 @@ class DRLKenkuStudent(KenkuStudent):
                 oal_tgt_sigma = 0.3, 
                 att_loss_weights = None,
                 drl_loss_weights = None,
+                accent_entropy_weight = 1.0,
                 as_components = False):
     
     if att_loss_weights is not None:
@@ -826,6 +838,7 @@ class DRLKenkuStudent(KenkuStudent):
     #=== DRL Loss Calculation ===#
     drl_loss = self._calc_drl_loss(src_variational, tgt_variational, dataset_size,
                                   drl_loss_weights = drl_loss_weights,
+                                  accent_entropy_weight = accent_entropy_weight,
                                   as_components = as_components)
     
     #=== Combine Loss ===#

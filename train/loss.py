@@ -130,10 +130,6 @@ def masked_gauss_dist_matrix(n_rows, n_cols, n_rows_on, n_cols_on, sigma):
   # Conjunctive masking (only remove the bottom right rectangle)
   masked_kernel_matrix[n_rows_on:, n_cols_on:] = 0.
   
-  # Disjunctive masking (only keep the top left rectangle)
-  # masked_kernel_matrix[n_rows_on:, :] = 0.
-  # masked_kernel_matrix[:, n_cols_on:] = 0.
-  
   return masked_kernel_matrix
 
 def diag_att_loss(A: Tensor, src_mask: Tensor, tgt_mask: Tensor, tgt_sigma = 0.3):
@@ -282,6 +278,16 @@ def beta_tcvae_loss_terms(z, mu, log_var, dataset_size, use_mss=True):
     tc_loss,
     dimwise_kld_loss
   )
+  
+def accent_entropy_loss(accent_vector: Tensor):
+  batch_size, n_mels = accent_vector.shape
+  
+  # Clamp to avoid NaN
+  accent_vector = torch.clamp(accent_vector, min=1e-10)
+  
+  # Entropy over accent dimension
+  entropy = -(accent_vector * accent_vector.log()).sum(dim=1)
+  return entropy.mean()
   
 
 if __name__ == "__main__":

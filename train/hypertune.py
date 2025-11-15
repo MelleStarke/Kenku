@@ -33,7 +33,8 @@ shorthand_setting_names = {
   'att_ch': 'ach',
   'out_ch': 'och',
   'embed_ch': 'ech',
-  'view_distance': 'avd'
+  'view_distance': 'avd',
+  'accent_entropy_weight': 'aew'
 }
 
 def get_setting(config_dict, idx):

@@ -1,0 +1,23 @@
+{
+    "epochs": 400,
+    "batch_size": 300,
+    "main_loss": "mse",
+    "learning_rate": 1e-06,
+    "adam_betas": [
+        0.9,
+        0.999
+    ],
+    "DAL_weight": 2000,
+    "OAL_weight": 2000,
+    "att_weight_decay": 0.04,
+    "n_thaw_layers": 14,
+    "ft_warmup_prop": 0.1,
+    "ft_thaw_prop": 0.5,
+    "test_interval": 100,
+    "melspec_interval": 200,
+    "max_test_batches": 100,
+    "checkpoint_interval": 500,
+    "checkpoint_max": 5,
+    "from_checkpoint": "/home3/s4984218/scratch/runs/student/final/25209833/checkpoints/epoch99_batch0_loss1.131.pt",
+    "no_log": false
+}
