@@ -1,4 +1,5 @@
-import sys, os
+import sys
+import os
 import argparse
 import subprocess
 
@@ -154,26 +155,3 @@ if __name__ == "__main__":
     print(f"Training script failed for setting: {folder_name}")
     print(f"Exit code: {e.returncode}")
     sys.exit(e.returncode)
-
-  
-  
-  # min_samples: 5
-  # sample_pairing: 'product'
-  # train_set_threshold: 10
-
-  # stack_factor: [2, 4, 8]
-  # conv_ch and att_ch (times stack_factor): [1, 12, 128] 
-  # embed_ch: 16
-  # dropout_rate: [0.2, 0.5]
-
-  # epochs: 30
-  # main_loss: 'mse'
-  # learning_rate: [1e-5, 5e-5, 1e-6]
-  # att_weight: [200, 2000]
-  # OAL_weight: ['on', 'off']
-  # att_weight_decay: [4, 16]
-  # L2_reg_weight: 0.001
-  # test_interval: 100
-  # melspec_interval: 200
-  # checkpoint_interval: 200
-  # checkpoint_max: 2

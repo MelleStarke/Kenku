@@ -1,4 +1,6 @@
-import sys, os
+import sys
+import os
+import subprocess
 
 counter = 0
 
@@ -15,12 +17,14 @@ for root, _, files in os.walk('/home3/s4984218/scratch/runs/hypertune_teacher/17
     run_dir = os.path.dirname(root)
     print(f'Found run nr. {run_nr}: {run_dir}')
 
+    folder_name = os.path.basename(run_dir)
+      
     train_command = [
       'python', 
       '-m', 'train.train_model', 
       '--config-dir', f'"{run_dir}"',
     ]
-    # print(' '.join(train_command))
+    
     try:
       # Use subprocess.run to execute the training script and stream its output
       result = subprocess.run(

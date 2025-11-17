@@ -1,13 +1,12 @@
 import argparse
-import os, sys
+import os
 import logging
-import json
 import gc
 
 from pathlib import Path
 from datetime import datetime
 
-from typing import Union, List, Tuple, Optional
+from typing import List, Optional
 
 from matplotlib.pyplot import get_cmap
 
@@ -16,7 +15,7 @@ from heapq import heappush, heappop
 import numpy as np
 
 import torch 
-from torch import nn, Tensor, tensor
+from torch import nn
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torchvision.utils import make_grid
@@ -24,17 +23,14 @@ from torchvision.utils import make_grid
 from tqdm import tqdm
 
 # Local imports
-from data.load import ParallelDatasetFactory, ParallelMelspecDataset, augment_collate_fn
+from data.load import ParallelDatasetFactory,  augment_collate_fn
 from data.augment import get_augment_fns
-from data.util import save_config, load_config, config_to_str, recursive_to_device, recursive_map
-from network.modules import KameBlock
+from data.util import save_config, load_config, config_to_str, recursive_to_device
 from network import (KenkuModel, 
                      KenkuTeacher, 
                      KenkuStudent, 
                      DRLKenkuTeacher,
                      DRLKenkuStudent,
-                     stack_frames, 
-                     unstack_frames, 
                      append_zero_frame)
 from train.optimize import group_student_params, IncrementalThawScheduler
 
@@ -309,7 +305,6 @@ class TensorboardManager:
                             global_step = self.global_step)
   
   def record_test_loss(self):
-    is_student = isinstance(self.model, KenkuStudent)
     
     test_losses = None
     
@@ -650,7 +645,7 @@ def main():
   
   #=== Configs ===#
   
-  print(f"\n===== Configs =====")
+  print("\n===== Configs =====")
   print(f'Time: {datetime.now().strftime("%H:%M:%S")}')
   
   # If config dir was passed, set all config file paths
@@ -700,7 +695,7 @@ def main():
   
   if is_student:
     assert model_config['from_teacher'] is not None, \
-      f"The student model expects `from_teacher` to point to a teacher checkpoint, but it is `None`."
+      "The student model expects `from_teacher` to point to a teacher checkpoint, but it is `None`."
   
   model_init_args = model_config.copy()
   for remove_key in ['model_class', 'drl', 'from_teacher']:
@@ -710,7 +705,7 @@ def main():
   
   #=== Load/Create Datasets ===#
   
-  print(f"\n===== Data =====")
+  print("\n===== Data =====")
   print(f'Time: {datetime.now().strftime("%H:%M:%S")}')
   
   
@@ -799,7 +794,7 @@ def main():
   #=== Load Checkpoint ===#
   
   if train_config['from_checkpoint']:
-    print(f"\n===== Checkpoint =====")
+    print("\n===== Checkpoint =====")
     print(f'Time: {datetime.now().strftime("%H:%M:%S")}')
     
     checkpoint_load_path = train_config['from_checkpoint']
@@ -821,7 +816,7 @@ def main():
   
   
   #=== Setup Checkpoint Manager ===#
-  print(f"\n===== Logging =====")
+  print("\n===== Logging =====")
   print(f'Time: {datetime.now().strftime("%H:%M:%S")}')
 
   run_dir = train_config['run_dir']

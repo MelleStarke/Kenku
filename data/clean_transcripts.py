@@ -73,9 +73,6 @@ def process_transcripts(input_dir, output_dir):
 
         with open(output_path, "w", encoding="utf-8") as f:
           f.write(standardized_text)
-          # print(standardized_text)
-
-        # print(f"Processed: {text} -> {standardized_text}")
 
 
 if __name__ == "__main__":

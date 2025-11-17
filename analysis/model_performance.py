@@ -10,7 +10,6 @@ from analysis.metrics import (
 )
 from tqdm import tqdm
 import pickle
-import numpy as np
 import torch
 from torch.utils.data import DataLoader
 import os
@@ -166,9 +165,12 @@ if __name__ =="__main__":
 
     pred_mel = output[0]
     
+    # Record true labels from data and latent factors from model
     if use_drl:
       src_age_gender.append(torch.stack([(src_info[0] * 30. + 10.), src_info[1]]).to(dtype=torch.int).T)
       tgt_age_gender.append(torch.stack([(tgt_info[0] * 30. + 10.), tgt_info[1]]).to(dtype=torch.int).T)
+      # Get the latent factors from the variational outputs
+      _, _, (src_latent, _, _, _), (src_latent, _, _, _) = output
       src_latent_factors.append(output[2][0].detach().cpu())
       tgt_latent_factors.append(output[3][0].detach().cpu())
     
@@ -194,13 +196,13 @@ if __name__ =="__main__":
     all_latent_factors = torch.cat(src_latent_factors + tgt_latent_factors, dim=0)
     all_age_gender = torch.cat(src_age_gender + tgt_age_gender, dim=0)
     
-    all_ages = all_age_gender[:,0].unique().tolist()
-    print(f'Unique ages in source set: {all_ages}\nFor a total of {len(all_ages)} unique ages.')
+    unique_ages = all_age_gender[:,0].unique().tolist()
+    print(f'Unique ages in source set: {unique_ages}\nFor a total of {len(unique_ages)} unique ages.')
 
     mig = mutual_information_gap(
       all_latent_factors[:,:2].detach().cpu().numpy(),
       all_age_gender.detach().cpu().numpy(),
-      [[18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 32, 33, 38], [0,1]],
+      [unique_ages, [0,1]],
       ['age', 'gender'],
     )
     

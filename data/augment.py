@@ -5,7 +5,7 @@ import os
 import logging
 from pathlib import Path
 
-from torch import nn, Tensor
+from torch import Tensor
 
 from scipy.spatial.distance import cdist
 
@@ -39,10 +39,6 @@ logfile_handler.setFormatter(log_formatter)
 ########################
 
 rng = np.random.default_rng()
-
-def set_seed(seed: int):
-  rng = np.random.default_rng(seed)
-
 
 ####################
 ### Time Warping ###
@@ -119,6 +115,19 @@ def compose_random_sines(max_period: int,
                          max_amp:  float = 2.,
                          min_mag:  float = 0.1,
                          max_mag:  float = 0.9,):
+  """
+  Create a composite of random sine waves for time warping.
+  Args:
+      max_period: Maximum period (in frames) of the sine waves
+      min_sines: Minimum number of sine waves to compose
+      max_sines: Maximum number of sine waves to compose
+      min_freq: Minimum frequency of sine waves
+      max_freq: Maximum frequency of sine waves
+      min_amp: Minimum amplitude of sine waves
+      max_amp: Maximum amplitude of sine waves
+      min_mag: Minimum magnitude of warping
+      max_mag: Maximum magnitude of warping
+  """
   n_sines = rng.integers(min_sines, max_sines + 1)
   frequency = rng.uniform(min_freq, max_freq, n_sines) / max_period * 2 * np.pi
   amplitude = rng.uniform(min_amp, max_amp, n_sines)
@@ -188,33 +197,6 @@ def get_augment_fns(model_type: str = 'teacher'):
   else:
     raise ValueError(f"Unknown model_type: {model_type}. Supported types are 'teacher' and 'student'.")
 
-def get_student_augment_fn():
-  clip      = AlignedRandomClip(keep_aligned=True)
-  time_warp = RandomStretchedTimeWarp()
-  
-  def fn_composition(src_mel: Tensor, tgt_mel: Tensor):
-    src_mel, tgt_mel = clip(src_mel, tgt_mel)
-    src_mel, tgt_mel = time_warp([src_mel, tgt_mel])
-    
-    return src_mel, tgt_mel
-  
-  return fn_composition
-  
-def get_default_augment_fn():
-  clip       = AlignedRandomClip()
-  # power_warp = RandomPowerWarp()
-  time_warp  = RandomStretchedTimeWarp()
-  
-  def fn_composition(src_mel: Tensor, tgt_mel: Tensor):
-    src_mel, tgt_mel = clip(src_mel, tgt_mel)
-    # src_mel, tgt_mel = power_warp(src_mel, tgt_mel)
-    src_mel = time_warp(src_mel)
-    tgt_mel = time_warp(tgt_mel)
-    
-    return src_mel, tgt_mel
-  
-  return fn_composition
-
 
 class MelspecTransform(ABC):
     
@@ -224,10 +206,22 @@ class MelspecTransform(ABC):
   
 
 class AlignedRandomClip(MelspecTransform):
+  """
+  Aligns and randomly clips two mel-spectrograms based on their DTW alignment path.
+  Spectrograms can be kept aligned frame-by-frame if desired.
+  """
   def __init__(self, 
                max_clip_ratio:    float = 0.7,
                max_output_frames: int   = 500,
                keep_aligned:      bool  = False):
+    """
+    Args: 
+        max_clip_ratio: Maximum ratio of frames to clip from either spectrogram
+                        (0.0 - 1.0). E.g. 0.3 means at most 30% of frames can be clipped.
+        max_output_frames: Maximum number of frames in the output spectrograms
+        keep_aligned: If True, the clipped spectrograms will be aligned frame-by-frame
+                       according to the DTW path.
+    """
     assert 0.0 <= max_clip_ratio < 1.0, f"max_clip_ratio must be within [0.0, 1.0). Got: max_clip_ratio = {max_clip_ratio}"
     
     self.max_clip_ratio    = max_clip_ratio
@@ -347,6 +341,20 @@ class RandomStretchedTimeWarp(MelspecTransform):
                max_stretch: float = 1.3,
                max_frames: int = 500,
   ):
+    """
+    Args:
+        min_sines: Minimum number of sine waves to compose
+        max_sines: Maximum number of sine waves to compose
+        min_freq: Minimum frequency of sine waves
+        max_freq: Maximum frequency of sine waves
+        min_amp: Minimum amplitude of sine waves
+        max_amp: Maximum amplitude of sine waves
+        min_mag: Minimum magnitude of warping
+        max_mag: Maximum magnitude of warping
+        min_stretch: Minimum stretch factor
+        max_stretch: Maximum stretch factor
+        max_frames: Maximum number of frames in the warped spectrogram
+    """
     self.min_sines = min_sines
     self.max_sines = max_sines
     self.min_freq = min_freq
@@ -508,12 +516,6 @@ class RandomPowerWarp:
       # Scale the warping function between [0,1]
       warped = (warped - warped.min()) / (warped.max() - warped.min())
       
-      # # Store for visualization
-      # x = np.linspace(0, 1, 200)
-      # y = identity_weight * x + (1 - identity_weight) * composite_fn(x)
-      # y = (y - y.min()) / (y.max() - y.min())
-      # self.current_warping = (np.linspace(0, 1, 200), y)
-      
       return warped
         
     return map_fn
@@ -584,7 +586,7 @@ class RandomPowerWarp:
   
 if __name__ == '__main__':
   import matplotlib.pyplot as plt
-  from data.load import ParallelDatasetFactory, ParallelMelspecDataset, collate_fn
+  from data.load import ParallelDatasetFactory, collate_fn
   
   mode = [
     'clip',
@@ -613,7 +615,6 @@ if __name__ == '__main__':
   src_mels, tgt_mels, src_masks, tgt_masks, _, _ = next(iter(dataloader))
   
   if mode == 'clip':
-    from network import append_zero_frame, prepend_zero_frame
     arc = AlignedRandomClip(max_clip_ratio=0.3, keep_aligned=False)
     
     for i in range(10):
@@ -762,7 +763,7 @@ if __name__ == '__main__':
       axes[2,0].plot(x, y, 'b-', linewidth=2, label='Warping function')
       axes[2,0].plot(x, x, 'k--', alpha=0.5, label='Identity')
       axes[2,0].grid(True, alpha=0.3)
-      axes[2,0].set_title(f"Power Warping Function")
+      axes[2,0].set_title("Power Warping Function")
       axes[2,0].legend()
     
       print(f" src min/max: {src_mel.min():.4}, {src_mel.max():.4}\t" f"warp min/max: {src_warp.min():.4}, {src_warp.max():.4}")

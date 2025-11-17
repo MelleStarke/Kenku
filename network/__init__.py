@@ -2,12 +2,9 @@ import os
 import numpy as np
 import logging
 import torch
-import torch.nn as nn
-import matplotlib.pyplot as plt
 
 from torch import Tensor, is_tensor
-from torch.nn.utils.parametrizations import weight_norm
-from typing import List, Tuple, Union, Optional
+from typing import List, Union, Optional
 from pathlib import Path
 
 from network.modules import (KenkuModule, 
@@ -190,6 +187,23 @@ class KenkuModel(KenkuModule):
                stack_factor: int = 4,
                view_distance: int = 64,
     ):
+    """
+    Base Kenku model class containing the shared components of both Teacher and Student models.
+    Args:
+        in_ch (int): Number of input mel channels.
+        conv_ch (int): Number of convolutional channels.
+        att_ch (int): Number of attention channels.
+        out_ch (int): Number of output mel channels.
+        embed_ch (int): Number of speaker embedding channels.
+        num_accents (int): Number of accent categories.
+        num_conv_layers (Optional[int], optional): Number of convolutional layers in each KameBlock. Defaults to 8.
+        kernel_size (Optional[int], optional): Kernel size of convolutional layers in each KameBlock. Defaults to 5.
+        dilations (Optional[List[int]], optional): Dilation rates of convolutional layers in each KameBlock. 
+                                                  If None, defaults to [1, 2, 4, 8, ...]. Defaults to None.
+        dropout_rate (Optional[float], optional): Dropout rate used in each KameBlock. Defaults to 0.2.
+        stack_factor (int, optional): Frame stacking factor. Defaults to 4.
+        view_distance (int, optional): View distance for the Scaled Dot-Product Attention module. Defaults to 64.
+    """
     super(KenkuModel, self).__init__()
     
     kame_block_kwargs = {
@@ -233,6 +247,15 @@ class KenkuModel(KenkuModule):
     return masks
     
   def _encode_inputs(self, src_mel, tgt_mel, src_info, tgt_info, stack = True):
+    """
+    Encode source and target mel-spectrograms into key, value, and query tensors.
+    Args:
+        src_mel (Tensor): Source mel-spectrogram tensor of shape (batch, n_mels, n_frames).
+        tgt_mel (Tensor): Target mel-spectrogram tensor of shape (batch, n_mels, n_frames).
+        src_info (Tensor): Source speaker properties tensor.
+        tgt_info (Tensor): Target speaker properties tensor.
+        stack (bool, optional): Whether to apply frame stacking. Defaults to True.
+    """
     if stack:
       src_mel, tgt_mel = self.stack_mels(src_mel, tgt_mel)
     
@@ -243,6 +266,15 @@ class KenkuModel(KenkuModule):
     return K, V, Q
   
   def _loss_input_preprocess(self, src_mel, tgt_mel, src_mask, tgt_mask, pos_weight=1.0):
+    """
+    Preprocess inputs for loss calculation by applying position encoding, frame stacking, and target zero-frame prepending.
+    Args:
+        src_mel (Tensor): Source mel-spectrogram tensor of shape (batch, n_mels, n_frames).
+        tgt_mel (Tensor): Target mel-spectrogram tensor of shape (batch, n_mels, n_frames).
+        src_mask (Tensor): Source mask tensor of shape (batch, 1, n_frames).
+        tgt_mask (Tensor): Target mask tensor of shape (batch, 1, n_frames).
+        pos_weight (float, optional): Weight for position encoding. Defaults to 1.0.
+    """
     #=== Position Encoding ===#
     src_mel, tgt_mel = apply_position_encoding(src_mel, tgt_mel, pos_weight=pos_weight)
     
@@ -277,26 +309,41 @@ class KenkuModel(KenkuModule):
                      pred_means    = None,
                      pred_vars     = None,
                      true_A        = None):
-      
-      # Diagonal attention loss
-      da_loss = diag_att_loss(A, src_mask, tgt_mask, tgt_sigma = dal_tgt_sigma)
-      # Orthogonal attention loss
-      oa_loss = ortho_att_loss(A, src_mask, tgt_sigma = oal_tgt_sigma)
-      
-      # If the auxiliary attention loss inputs aren't passed,
-      # only return diagonal and orthogonal attention losses
-      if pred_means is pred_vars is true_A is None:
-        return da_loss, oa_loss
-      
-      if any(map(lambda x: x is None, [pred_means, pred_vars, true_A])):
-        raise ValueError("To calculate the auxiliary attention loss, all of pred_means, pred_vars, and true_A must be provided.")
+    """
+    Calculate attention losses: diagonal attention loss and orthogonal attention loss. 
+    Optionally, calculate auxiliary attention loss if predicted means, variances, and true attention matrix are provided.
+    Args:
+        A (Tensor): Predicted attention matrix of shape (batch, n_src_frames, n_tgt_frames).
+        src_mask (Tensor): Source mask tensor of shape (batch, 1, n_src_frames).
+        tgt_mask (Tensor): Target mask tensor of shape (batch, 1, n_tgt_frames).
+        dal_tgt_sigma (float, optional): Target sigma for diagonal attention loss. Defaults to 0.3.
+        oal_tgt_sigma (float, optional): Target sigma for orthogonal attention loss. Defaults to 0.3.
+        pred_means (Optional[Tensor], optional): Predicted means for auxiliary attention loss. Defaults to None.
+        pred_vars (Optional[Tensor], optional): Predicted variances for auxiliary attention loss. Defaults to None.
+        true_A (Optional[Tensor], optional): True attention matrix for auxiliary attention loss. Defaults to None.
+    """
+    # Diagonal attention loss
+    da_loss = diag_att_loss(A, src_mask, tgt_mask, tgt_sigma = dal_tgt_sigma)
+    # Orthogonal attention loss
+    oa_loss = ortho_att_loss(A, src_mask, tgt_sigma = oal_tgt_sigma)
+    
+    # If the auxiliary attention loss inputs aren't passed,
+    # only return diagonal and orthogonal attention losses
+    if pred_means is pred_vars is true_A is None:
+      return da_loss, oa_loss
+    
+    if any(map(lambda x: x is None, [pred_means, pred_vars, true_A])):
+      raise ValueError("To calculate the auxiliary attention loss, all of pred_means, pred_vars, and true_A must be provided.")
 
-      # Auxiliary attention loss
-      aa_loss = auxil_att_loss(pred_means, pred_vars, true_A)
-      
-      return da_loss, oa_loss, aa_loss
+    # Auxiliary attention loss
+    aa_loss = auxil_att_loss(pred_means, pred_vars, true_A)
+    
+    return da_loss, oa_loss, aa_loss
     
   def clear_paddings(self):
+    """
+    Clear causal convolution paddings in all KameBlock modules.
+    """
     self.src_encoder.clear_paddings()
     self.tgt_encoder.clear_paddings()
     self.decoder.clear_paddings()
@@ -318,6 +365,23 @@ class KenkuTeacher(KenkuModel):
                stack_factor: int = 4,
                view_distance: int = 64
     ):
+    """
+    Kenku Teacher model class.
+    Args:
+        in_ch (int): Number of input mel channels.
+        conv_ch (int): Number of convolutional channels.
+        att_ch (int): Number of attention channels.
+        out_ch (int): Number of output mel channels.
+        embed_ch (int): Number of speaker embedding channels.
+        num_accents (int): Number of accent categories.
+        num_conv_layers (Optional[int], optional): Number of convolutional layers in each KameBlock. Defaults to 8.
+        kernel_size (Optional[int], optional): Kernel size of convolutional layers in each KameBlock. Defaults to 5.
+        dilations (Optional[List[int]], optional): Dilation rates of convolutional layers in each KameBlock. 
+                                                  If None, defaults to [1, 2, 4, 8, ...]. Defaults to None.
+        dropout_rate (Optional[float], optional): Dropout rate used in each KameBlock. Defaults to 0.2.
+        stack_factor (int, optional): Frame stacking factor. Defaults to 4.
+        view_distance (int, optional): View distance for the Scaled Dot-Product Attention module. Defaults to 64.
+    """
     super(KenkuTeacher, self).__init__(
       in_ch, conv_ch, att_ch, out_ch, embed_ch, num_accents,              
       num_conv_layers      = num_conv_layers,
@@ -350,6 +414,11 @@ class KenkuTeacher(KenkuModel):
     return Y, A
   
   def to_student(self, student_kwargs=None):
+    """
+    Convert this Teacher model into a Student model by transferring weights.
+    Args:
+        student_kwargs (dict, optional): Additional keyword arguments to pass to the KenkuStudent constructor. Defaults to None.
+    """
     student_kwargs = {} if student_kwargs is None else student_kwargs
     student = KenkuStudent(*self._init_args, 
                            **{**self._init_kwargs, **student_kwargs})
@@ -366,7 +435,27 @@ class KenkuTeacher(KenkuModel):
                 att_loss_weights = None,
                 as_components = False,
                 **kwargs):
+    """
+    Calculate the total loss for the Kenku Teacher model.
     
+    Args:
+        src_mel (Tensor): Source mel-spectrogram tensor of shape (batch, n_mels, n_frames).
+        tgt_mel (Tensor): Target mel-spectrogram tensor of shape (batch, n_mels, n_frames).
+        src_mask (Tensor): Source mask tensor of shape (batch, 1, n_frames).
+        tgt_mask (Tensor): Target mask tensor of shape (batch, 1, n_frames).
+        src_info (Tensor): Source speaker properties tensor.
+        tgt_info (Tensor): Target speaker properties tensor.
+        main_loss_fn (str, optional): Main loss function to use ('mse' or 'mae'). Defaults to 'mse'.
+        pos_weight (float, optional): Weight for position encoding. Defaults to 1.0.
+        dal_tgt_sigma (float, optional): Target sigma for diagonal attention loss. Defaults to 0.3.
+        oal_tgt_sigma (float, optional): Target sigma for orthogonal attention loss. Defaults to 0.3.
+        att_loss_weights (Optional[List[float]], optional): Weights for attention loss terms [da_loss_weight, oa_loss_weight]. 
+                                                           Defaults to None.
+        as_components (bool, optional): Whether to return loss components separately. Defaults to False.
+        
+    Returns:
+        Union[Tensor, dict]: Total loss tensor or dictionary of loss components if as_components is True.
+    """
     if att_loss_weights is not None:
       assert len(att_loss_weights) == 2, f"Incorrect amount of attention loss weights. Expected 2, got {len(att_loss_weights)}."
     
@@ -390,7 +479,10 @@ class KenkuTeacher(KenkuModel):
                  oal_tgt_sigma = 0.3, 
                  att_loss_weights = None,
                  as_components = False):
-    
+    """
+    Calculate the total loss for the Kenku Teacher model.
+    Separated from calc_loss to allow for reuse by child classes.
+    """
     #=== Loss Terms ===#
     main_loss = self._calc_main_loss(pred_mel, tgt_mel, tgt_mask, main_loss_fn)
     da_loss, oa_loss = self._calc_att_loss(A, src_mask, tgt_mask, dal_tgt_sigma, oal_tgt_sigma)
@@ -430,7 +522,25 @@ class KenkuStudent(KenkuModel):
                stack_factor: int = 4,
                view_distance: int = 64,
                rng: Union[torch.Generator, int] = None):
+    """
+    Kenku Student model class.
     
+    Args:
+        in_ch (int): Number of input mel channels.
+        conv_ch (int): Number of convolutional channels.
+        att_ch (int): Number of attention channels.
+        out_ch (int): Number of output mel channels.
+        embed_ch (int): Number of speaker embedding channels.
+        num_accents (int): Number of accent categories.
+        num_conv_layers (Optional[int], optional): Number of convolutional layers in each KameBlock. Defaults to 8.
+        kernel_size (Optional[int], optional): Kernel size of convolutional layers in each KameBlock. Defaults to 5.
+        dilations (Optional[List[int]], optional): Dilation rates of convolutional layers in each KameBlock. 
+                                                  If None, defaults to [1, 2, 4, 8, ...]. Defaults to None.
+        dropout_rate (Optional[float], optional): Dropout rate used in each KameBlock. Defaults to 0.2.
+        stack_factor (int, optional): Frame stacking factor. Defaults to 4.
+        view_distance (int, optional): View distance for the Scaled Dot-Product Attention module. Defaults to 64.
+        rng (Union[torch.Generator, int], optional): Random number generator or seed for attention predictor. Defaults to None.
+    """
     super(KenkuStudent, self).__init__(
       in_ch, conv_ch, att_ch, out_ch, embed_ch, num_accents,              
       num_conv_layers      = num_conv_layers,
@@ -471,6 +581,9 @@ class KenkuStudent(KenkuModel):
     return Y, pred_A
     
   def load_teacher_state_dict(self, tea_dict: dict):
+    """
+    Load weights from a Kenku Teacher model state dict into this Kenku Student model.
+    """
     stu_dict = self.state_dict()
     
     tea_keys = list(tea_dict.keys())
@@ -483,12 +596,8 @@ class KenkuStudent(KenkuModel):
     
     self.load_state_dict(state_dict)
     
-    # # Freeze copied weights.
-    # for name, param in self.named_parameters():
-    #   if name in tea_keys:
-    #     param.requires_grad = False
-    
     # Freeze only the target encoder weights
+    # Necessary for the IncrementalThawScheduler to work properly
     for param in self.tgt_encoder.parameters():
       param.requires_grad = False
   
@@ -500,7 +609,27 @@ class KenkuStudent(KenkuModel):
                 att_loss_weights = None,
                 as_components = False,
                 **kwargs):
+    """
+    Calculate the total loss for the Kenku Student model.
     
+    Args:
+        src_mel (Tensor): Source mel-spectrogram tensor of shape (batch, n_mels, n_frames).
+        tgt_mel (Tensor): Target mel-spectrogram tensor of shape (batch, n_mels, n_frames).
+        src_mask (Tensor): Source mask tensor of shape (batch, 1, n_frames).
+        tgt_mask (Tensor): Target mask tensor of shape (batch, 1, n_frames).
+        src_info (Tensor): Source speaker properties tensor.
+        tgt_info (Tensor): Target speaker properties tensor.
+        main_loss_fn (str, optional): Main loss function to use ('mse' or 'mae'). Defaults to 'mse'.
+        pos_weight (float, optional): Weight for position encoding. Defaults to 1.0.
+        dal_tgt_sigma (float, optional): Target sigma for diagonal attention loss. Defaults to 0.3.
+        oal_tgt_sigma (float, optional): Target sigma for orthogonal attention loss. Defaults to 0.3.
+        att_loss_weights (Optional[List[float]], optional): Weights for attention loss terms [da_loss_weight, oa_loss_weight, aa_loss_weight]. 
+                                                           Responsible for diagonal, orthogonal, and auxiliary loss, respectively. Defaults to [2000, 2000, 1].
+        as_components (bool, optional): Whether to return loss components separately. Defaults to False.
+        
+    Returns:
+        Union[Tensor, dict]: Total loss tensor or dictionary of loss components if as_components is True.
+    """
     if att_loss_weights is not None:
       assert len(att_loss_weights) == 3, f"Incorrect amount of attention loss weights. Expected 3, got {len(att_loss_weights)}."
     
@@ -550,9 +679,9 @@ class KenkuStudent(KenkuModel):
     # Return as components if requested
     if as_components:
       return {'main loss': main_loss, 
-              'aa loss': aa_loss, 
               'da loss': da_loss, 
-              'oa loss': oa_loss}, pred_A
+              'oa loss': oa_loss,
+              'aa loss': aa_loss}, pred_A
     
     # Weigh and sum loss terms
     if att_loss_weights is None:
@@ -560,7 +689,7 @@ class KenkuStudent(KenkuModel):
       
     total_loss = main_loss
     
-    for lw, loss_term in zip(att_loss_weights, [aa_loss, da_loss, oa_loss]):
+    for lw, loss_term in zip(att_loss_weights, [da_loss, oa_loss, aa_loss]):
       total_loss += lw * loss_term
       
     return total_loss, pred_A
@@ -574,11 +703,24 @@ class KenkuStudent(KenkuModel):
 ##################
 
 class DRLLossMixin:
+  """
+  Mixin class providing DRL loss calculation functionality.
+  """
   def _calc_drl_loss(self, src_variational, tgt_variational, dataset_size,
                      drl_loss_weights = None, 
                      accent_entropy_weight = 1.0, 
                      as_components = False):
-    
+    """
+    Calculate the DRL loss given source and target variational outputs.
+    Args:
+        src_variational (tuple): Tuple of (src_info, src_z, src_mu, src_log_var).
+        tgt_variational (tuple): Tuple of (tgt_info, tgt_z, tgt_mu, tgt_log_var).
+        dataset_size (int): Size of the dataset for loss normalization.
+        drl_loss_weights (Optional[List[float]], optional): Weights for DRL loss terms [mi_loss_weight, tc_loss_weight, dw_kld_loss_weight]. 
+                                                           Defaults to None.
+        accent_entropy_weight (float, optional): Weight for accent entropy loss. Defaults to 1.0.
+        as_components (bool, optional): Whether to return loss components separately. Defaults to False.
+    """
     src_info, src_z, src_mu, src_log_var = src_variational
     tgt_info, tgt_z, tgt_mu, tgt_log_var = tgt_variational
     
@@ -626,6 +768,25 @@ class DRLKenkuTeacher(KenkuTeacher, DRLLossMixin):
                dropout_rate: Optional[float] = 0.2,
                stack_factor: int = 4,
                view_distance: int = 64):
+    """
+    DRL Kenku Teacher model class. Uses beta-TCVAE for disentanglement of speaker properties.
+    
+    Args:
+        in_ch (int): Number of input mel channels.
+        conv_ch (int): Number of convolutional channels.
+        att_ch (int): Number of attention channels.
+        out_ch (int): Number of output mel channels.
+        embed_ch (int): Number of speaker embedding channels.
+        num_accents (int): Number of accent categories.
+        num_conv_layers (Optional[int], optional): Number of convolutional layers in each KameBlock. Defaults to 8.
+        num_si_conv_layers (Optional[int], optional): Number of convolutional layers in the SpeakerInfoPredictor. Defaults to 6.
+        kernel_size (Optional[int], optional): Kernel size of convolutional layers in each KameBlock. Defaults to 5.
+        dilations (Optional[List[int]], optional): Dilation rates of convolutional layers in each KameBlock. 
+                                                  If None, defaults to [1, 2, 4, 8, ...]. Defaults to None.
+        dropout_rate (Optional[float], optional): Dropout rate used in each KameBlock. Defaults to 0.2.
+        stack_factor (int, optional): Frame stacking factor. Defaults to 4.
+        view_distance (int, optional): View distance for the Scaled Dot-Product Attention module. Defaults to 64.
+    """
     
     super(DRLKenkuTeacher, self).__init__(
       in_ch, conv_ch, att_ch, out_ch, embed_ch, num_accents,              
@@ -645,6 +806,8 @@ class DRLKenkuTeacher(KenkuTeacher, DRLLossMixin):
       dropout_rate    = dropout_rate
     )
     
+    # Recursively initialize embed layers of all Kame blocks with DRL capability
+    # This is done post-hoc to ensure the speaker_info_predictor is at root level in the PyTorch graph.
     self._init_embed_layer(use_drl = True)
     
   def forward(self, src_mel, tgt_mel, src_mask, tgt_mask, stack = True, return_variational = False):
@@ -676,7 +839,30 @@ class DRLKenkuTeacher(KenkuTeacher, DRLLossMixin):
                 drl_loss_weights = None,
                 accent_entropy_weight = 1.0,
                 as_components = False):
+    """
+    Calculate the total loss for the DRL Kenku Teacher model.
     
+    Args:
+        src_mel (Tensor): Source mel-spectrogram tensor of shape (batch, n_mels, n_frames).
+        tgt_mel (Tensor): Target mel-spectrogram tensor of shape (batch, n_mels, n_frames).
+        src_mask (Tensor): Source mask tensor of shape (batch, 1, n_frames).
+        tgt_mask (Tensor): Target mask tensor of shape (batch, 1, n_frames).
+        dataset_size (int): Size of the dataset for loss normalization.
+        main_loss_fn (str, optional): Main loss function to use ('mse' or 'mae'). Defaults to 'mse'.
+        pos_weight (float, optional): Weight for position encoding. Defaults to 1.0.
+        dal_tgt_sigma (float, optional): Target sigma for diagonal attention loss. Defaults to 0.3.
+        oal_tgt_sigma (float, optional): Target sigma for orthogonal attention loss. Defaults to 0.3.
+        att_loss_weights (Optional[List[float]], optional): Weights for attention loss terms [da_loss_weight, oa_loss_weight]. 
+                                                            Corresponding to diagonal and orthogonal loss, respectively. Defaults to None.
+        drl_loss_weights (Optional[List[float]], optional): Weights for DRL loss terms [mi_loss_weight, tc_loss_weight, dw_kld_loss_weight]. 
+                                                           Corresponding to mutual information, total correlation, and dimension-wise KLD loss, 
+                                                           respectively. Defaults to None.
+        accent_entropy_weight (float, optional): Weight for accent entropy loss. Defaults to 1.0.
+        as_components (bool, optional): Whether to return loss components separately. Defaults to False.
+        
+    Returns:
+        Union[Tensor, dict]: Total loss tensor or dictionary of loss components if as_components is True.
+    """
     if att_loss_weights is not None:
       assert len(att_loss_weights) == 2, f"Incorrect amount of attention loss weights. Expected 2, got {len(att_loss_weights)}."
     
@@ -717,6 +903,11 @@ class DRLKenkuTeacher(KenkuTeacher, DRLLossMixin):
     return loss, A
     
   def to_student(self, student_kwargs=None):
+    """
+    Convert this Teacher model into a Student model by transferring weights.
+    Args:
+        student_kwargs (dict, optional): Additional keyword arguments to pass to the DRLKenkuStudent constructor. Defaults to None.
+    """
     student_kwargs = {} if student_kwargs is None else student_kwargs
     student = DRLKenkuStudent(*self._init_args, 
                               **{**self._init_kwargs, **student_kwargs})
@@ -745,7 +936,26 @@ class DRLKenkuStudent(KenkuStudent):
                stack_factor: int = 4,
                view_distance: int = 64,
                rng: Union[torch.Generator, int] = None):
+    """
+    DRL Kenku Student model class. Uses beta-TCVAE for disentanglement of speaker properties.
     
+    Args:
+        in_ch (int): Number of input mel channels.
+        conv_ch (int): Number of convolutional channels.
+        att_ch (int): Number of attention channels.
+        out_ch (int): Number of output mel channels.
+        embed_ch (int): Number of speaker embedding channels.
+        num_accents (int): Number of accent categories.
+        num_conv_layers (Optional[int], optional): Number of convolutional layers in each KameBlock. Defaults to 8.
+        num_si_conv_layers (Optional[int], optional): Number of convolutional layers in the SpeakerInfoPredictor. Defaults to 6.
+        kernel_size (Optional[int], optional): Kernel size of convolutional layers in each KameBlock. Defaults to 5.
+        dilations (Optional[List[int]], optional): Dilation rates of convolutional layers in each KameBlock. 
+                                                  If None, defaults to [1, 2, 4, 8, ...]. Defaults to None.
+        dropout_rate (Optional[float], optional): Dropout rate used in each KameBlock. Defaults to 0.2.
+        stack_factor (int, optional): Frame stacking factor. Defaults to 4.
+        view_distance (int, optional): View distance for the Scaled Dot-Product Attention module. Defaults to 64.
+        rng (Union[torch.Generator, int], optional): Random number generator or seed for attention predictor. Defaults to None.
+    """
     super(DRLKenkuStudent, self).__init__(
       in_ch, conv_ch, att_ch, out_ch, embed_ch, num_accents,              
       num_conv_layers      = num_conv_layers,
@@ -764,6 +974,8 @@ class DRLKenkuStudent(KenkuStudent):
       dropout_rate    = dropout_rate
     )
     
+    # Recursively initialize embed layers of all Kame blocks with DRL capability
+    # This is done post-hoc to ensure the speaker_info_predictor is at root level in the PyTorch graph.
     self._init_embed_layer(use_drl = True)
     
   def forward(self, src_mel, tgt_mel, src_mask, tgt_mask, 
@@ -797,7 +1009,30 @@ class DRLKenkuStudent(KenkuStudent):
                 drl_loss_weights = None,
                 accent_entropy_weight = 1.0,
                 as_components = False):
+    """
+    Calculate the total loss for the DRL Kenku Student model.
     
+    Args:
+        src_mel (Tensor): Source mel-spectrogram tensor of shape (batch, n_mels, n_frames).
+        tgt_mel (Tensor): Target mel-spectrogram tensor of shape (batch, n_mels, n_frames).
+        src_mask (Tensor): Source mask tensor of shape (batch, 1, n_frames).
+        tgt_mask (Tensor): Target mask tensor of shape (batch, 1, n_frames).
+        dataset_size (int): Size of the dataset for loss normalization.
+        main_loss_fn (str, optional): Main loss function to use ('mse' or 'mae'). Defaults to 'mse'.
+        pos_weight (float, optional): Weight for position encoding. Defaults to 1.0.
+        dal_tgt_sigma (float, optional): Target sigma for diagonal attention loss. Defaults to 0.3.
+        oal_tgt_sigma (float, optional): Target sigma for orthogonal attention loss. Defaults to 0.3.
+        att_loss_weights (Optional[List[float]], optional): Weights for attention loss terms [da_loss_weight, oa_loss_weight]. 
+                                                            Corresponding to diagonal and orthogonal loss, respectively. Defaults to None.
+        drl_loss_weights (Optional[List[float]], optional): Weights for DRL loss terms [mi_loss_weight, tc_loss_weight, dw_kld_loss_weight]. 
+                                                           Corresponding to mutual information, total correlation, and dimension-wise KLD loss, 
+                                                           respectively. Defaults to None.
+        accent_entropy_weight (float, optional): Weight for accent entropy loss. Defaults to 1.0.
+        as_components (bool, optional): Whether to return loss components separately. Defaults to False.
+        
+    Returns:
+        Union[Tensor, dict]: Total loss tensor or dictionary of loss components if as_components is True.
+    """
     if att_loss_weights is not None:
       assert len(att_loss_weights) == 3, f"Incorrect amount of attention loss weights. Expected 3, got {len(att_loss_weights)}."
     
@@ -872,7 +1107,7 @@ if __name__ == "__main__":
   
   if mode == 'teacher to student':
     from torch.utils.data import DataLoader
-    from data.load import ParallelMelspecDataset, ParallelDatasetFactory, collate_fn
+    from data.load import ParallelDatasetFactory, collate_fn
     
     torch.set_default_device("cuda:0")
     

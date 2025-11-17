@@ -4,9 +4,6 @@ import logging
 import torch
 
 from torch import Tensor, is_tensor
-from torch.nn import functional as F
-from torch.nn.parameter import Parameter
-from typing import List, Tuple, Union, Optional, Iterator
 from pathlib import Path
 
 
@@ -70,10 +67,9 @@ def mae_loss(pred_mel: Tensor,
 ######################
 
 def auxil_att_loss(pred_means: Tensor, pred_stds: Tensor, true_A: Tensor):
-  # TODO: Add masking
   batch_size, n_src_frames, n_tgt_frames = true_A.shape
   # Attention matrix is of shape N x M i.e. src_frames x tgt_frames
-  N, M = n_src_frames, n_tgt_frames
+  _, M = n_src_frames, n_tgt_frames
   
   device = true_A.device
   dtype = true_A.dtype
@@ -294,7 +290,7 @@ if __name__ == "__main__":
   import matplotlib.pyplot as plt
   from data.load import ParallelDatasetFactory, collate_fn
   from torch.utils.data import DataLoader
-  from network import append_zero_frame, prepend_zero_frame
+  from network import prepend_zero_frame
   
   mode = [
     'attention_masking',
@@ -332,10 +328,6 @@ if __name__ == "__main__":
     print(rbf_mat.min(), rbf_mat.max())
     print(rbf_mat.shape)
 
-
-    # plt.imshow(rbf_mat.detach().cpu().numpy())
-    # plt.show()
-
     N = src_mel.shape[2]
     T = tgt_mel.shape[2]
 
@@ -363,7 +355,7 @@ if __name__ == "__main__":
     pred_means = torch.arange(N).view(1,1,N)
     pred_stds  = torch.zeros(N).view(1,1,N)
     
-    print(f"Test with ID matrix as attention matrix. Pred means: arange(N), pred stds: zeros. Expected: 0")
+    print("Test with ID matrix as attention matrix. Pred means: arange(N), pred stds: zeros. Expected: 0")
     print(auxil_att_loss(pred_means, pred_stds, true_A))
     
     idx_mat = torch.arange(N).view(N,1) - torch.arange(N).view(1,N)
@@ -373,5 +365,5 @@ if __name__ == "__main__":
     pred_means = torch.arange(N).view(1,1,N)
     pred_stds  = torch.ones(N).view(1,1,N)
     
-    print(f"Test with standard gaussian matrix. Pred means: arange(N), pred stds: ones. Expected: 0")
+    print("Test with standard gaussian matrix. Pred means: arange(N), pred stds: ones. Expected: 0")
     print(auxil_att_loss(pred_means, pred_stds, true_A))

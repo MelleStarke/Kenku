@@ -2,14 +2,11 @@ import argparse
 import joblib
 import pickle
 import logging
-import warnings
 import numpy as np
-import os, sys
+import os
 import h5py
-import json
 import librosa
 import soundfile as sf
-import matplotlib.pyplot as plt
 
 from pathlib import Path
 
@@ -54,12 +51,6 @@ norm_logfile_handler.setFormatter(log_formatter)
 normalization_logger.addHandler(norm_logfile_handler)
 
 
-# TODO: standardize names: FFT size/frame length AND hop size/frame shift
-# TODO: fix job worker warning (occurs when doing full convert + norm calc + apply): 
-#   Applying normalization...
-#   /home/user/anaconda3/envs/thesis/lib/python3.12/site-packages/joblib/externals/loky/process_executor.py:752: 
-#   UserWarning: A worker stopped while some jobs were given to the executor. This can be caused by a too short worker timeout or by a memory leak.
-
 #########################
 ### Format Conversion ###  
 #########################
@@ -96,9 +87,7 @@ def audio_file_to_melspec(src_filepath: str, dst_filepath: str, config: dict, ov
     logger.info(f"File {dst_filepath} already exists. Skipping.")
     return
   
-  try:
-    # warnings.filterwarnings('ignore')
-    
+  try:    
     # Defaults found in ln. 105-112 and 23-31 in ConvS2S_VC/extract_features.py)
     trim_silence = not config['no_trim']  # default True
     trim_power_ratio = config['trim_power_ratio']  # default 30
@@ -111,11 +100,6 @@ def audio_file_to_melspec(src_filepath: str, dst_filepath: str, config: dict, ov
     
     # Load the audio file
     audio, base_samp_rate = sf.read(src_filepath)
-    
-    # # Optionally trim silence
-    # if trim_silence:
-    #   # TODO: why manual frame length and shift if we can use config above?
-    #   audio, _ = librosa.effects.trim(audio, frame_length=512, hop_length=128, aggregate=np.mean)
 
     # Resample if the base sampling rate doesn't match the target rate
     if base_samp_rate != samp_rate:
@@ -151,17 +135,8 @@ def audio_file_to_melspec(src_filepath: str, dst_filepath: str, config: dict, ov
       end_frame = max(np.argmax(melspec_mean[::-1] > threshold) - 10, 0)
       end_frame = len(melspec_mean) - end_frame
       
-      # fig, axes = plt.subplots(2,1)
-      # axes[0].imshow(melspec, aspect='auto')
-      # axes[0].set_title('Mel-spectrogram')
-      
       # Clip the mel-spectrogram
       melspec = melspec[:, start_frame:end_frame]
-      
-      # axes[1].imshow(melspec, aspect='auto')
-      # axes[1].set_title('Trimmed Mel-spectrogram')
-      # plt.show()
-      # ""
       
     # Ensure output directory exists, then save melspec in HDF5 format
     if not os.path.exists(os.path.dirname(dst_filepath)):
@@ -477,9 +452,6 @@ def main():
     
     melspec_filepaths = list(walk_files(dest_dir, '.h5'))
     
-    # [apply_norm_scaler(melspec_filepath, norm_scaler) 
-    #  for melspec_filepath in tqdm(melspec_filepaths, total=len(melspec_filepaths))
-    # ]
     normalization_logger.info(f"Starting melspec normalization of {dest_dir}")
     print("Applying normalization...")
     

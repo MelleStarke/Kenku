@@ -6,20 +6,18 @@ import logging
 import joblib
 import matplotlib.pyplot as plt
 
-from tqdm import tqdm
 from copy import copy
 from csv import DictReader
 from dataclasses import dataclass, field
 
-from pathlib import Path, PurePath
+from pathlib import Path
 
-from typing import List, Tuple, Optional, Union, Dict, Callable
+from typing import List, Optional, Dict, Callable
 
 from torch.utils.data import Dataset, DataLoader
 
 from itertools import product
 
-from data.augment import get_default_augment_fn, get_student_augment_fn
 from network import stack_frames
 
 
@@ -82,8 +80,8 @@ def collate_fn(batch):
 
   Returns:
       (Tensor, Tensor, Tensor, Tensor, List, List): 
-          Tuple of batches of 1.) source melspecs,           2.) target melspecs, 
-                              3.) source masks,              4.) target masks,
+          Tuple of batches of 1.) source melspecs,     2.) target melspecs, 
+                              3.) source masks,        4.) target masks,
                               5.) source speaker info, 6.) target speaker info.
   """
   
@@ -133,6 +131,13 @@ def collate_fn(batch):
           src_info_batch,    tgt_info_batch)
     
 def augment_collate_fn(augment_fn = None):
+  """
+  Wraps a collate function to include data augmentation.
+  Args:
+    augment_fn (Callable or None): A function that takes in a source and target mel-spectrogram
+                                    and returns augmented versions of them. If None, no augmentation
+                                    is applied.
+  """
   assert augment_fn is None or isinstance(augment_fn, Callable), 'augment_fn must be a callable or None.'
   
   if augment_fn is None:
@@ -148,6 +153,9 @@ def augment_collate_fn(augment_fn = None):
     
 @dataclass
 class MelspecSample:
+  """
+  Data class representing a mel-spectrogram sample and its associated metadata.
+  """
   id: str
   speaker_id: str
   melspec_path: str
@@ -169,6 +177,9 @@ class MelspecSample:
   
   
 class SpeakerInfoMixin:
+  """
+  Mixin class providing methods to encode speaker information.
+  """
   def encode_age(self, age):
     lowbound, hibound = self.age_bounds
     age_range = hibound - lowbound
@@ -190,6 +201,13 @@ class ParallelDatasetFactory(SpeakerInfoMixin):
                age_bounds = (10, 40),
                rng: Optional[np.random.Generator] = None
   ):
+    """
+    Factory class to create ParallelMelspecDataset instances from a dataset directory.
+    Args:
+      dataset_dir (str): Path to the dataset directory containing 'melspec', 'transcript', and 'speaker_info.csv'.
+      age_bounds (tuple): Tuple specifying the minimum and maximum ages for scaling.
+      rng (np.random.Generator or None): Random number generator for reproducibility. If None, a default generator is created.
+    """
     self.age_bounds = age_bounds
     self.rng = rng if rng else np.random.default_rng(42)
     
@@ -386,6 +404,16 @@ class ParallelMelspecDataset(Dataset, SpeakerInfoMixin):
                sample_pairing = 'random',
                rng: Optional[np.random.Generator] = None
   ):
+    """
+    PyTorch Dataset for parallel mel-spectrogram samples paired by transcript.
+    Args:
+      samples (List[MelspecSample]): List of mel-spectrogram samples.
+      transcript_dict (Dict[str, List[int]]): Dictionary mapping transcripts to lists of sample indices.
+      age_bounds (tuple): Tuple specifying the minimum and maximum ages for scaling.
+      all_accents (List[str] or None): List of all accents in the dataset for encoding. If None, accent encoding will not work.
+      sample_pairing (str): Method for pairing samples. Choose 'random' or 'product'.
+      rng (np.random.Generator or None): Random number generator for reproducibility. If None, a default generator is created.
+    """
     assert sample_pairing.lower() in ['random', 'rand', 'product', 'prod'], \
       f"'{sample_pairing}' not a valid sample pairing mode. Choose 'random' or 'product'."
     

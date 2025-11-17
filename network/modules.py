@@ -505,9 +505,6 @@ class KenkuAttention(KenkuModule):
     vlf = view_limited_frames = n_tgt_frames - vd
     
     limit_mask = torch.triu(torch.ones(min(vlf, n_src_frames), min(vlf, n_tgt_frames), dtype=A.dtype, device=A.device))
-    target = mask[:n_tgt_frames - vd, vd:]
-    target_shape = target.shape
-    limit_mask_shape = limit_mask.shape
     mask[:vlf, vd:] = mask[:n_tgt_frames - vd, vd:] - limit_mask
     mask = mask.expand(batch_size, -1, -1)
     
@@ -662,7 +659,6 @@ if __name__ == "__main__":
         n_tgt_frames_on = m_frames
         
         src_lin_vec = torch.arange(n_frames, device=device) / n_src_frames_on
-        tgt_lin_vec = torch.arange(n_frames, device=device) / n_tgt_frames_on
         
         src_vec_vstack = src_lin_vec.repeat(n_frames, 1).T
         tgt_vec_hstack = src_lin_vec.repeat(n_frames, 1)
