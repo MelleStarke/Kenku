@@ -113,7 +113,7 @@ class KenkuEmbedding(KenkuModule):
     
     assert batch_size == len(genders) == len(accents), (
       f"Batch size mismatch between age, gender, and accent vector \n" 
-      f"{(len(age), len(gender), len(accent))}"
+      f"{(len(ages), len(genders), len(accents))}"
     )
      
     ages       = ages.unsqueeze(-1)

@@ -1,1 +1,0 @@
-python -m train.train_model --model-class student --from-teacher ~/scratch/runs/16756183/checkpoints/epoch5_batch0_loss0.4276.pt --dataset-dir ~/scratch/processed --n-cores 2 --min-samples 20 --train-set-threshold 30 --stack-factor 4 --conv-ch 80 --att-ch 80 -dor 0.2 --epochs 2 --batch-size 4 --max-test-batches 10 --run-dir ~/scratch/runs/student/int_gpu1 --no-log

@@ -280,7 +280,7 @@ def beta_tcvae_loss_terms(z, mu, log_var, dataset_size, use_mss=True):
   )
   
 def accent_entropy_loss(accent_vector: Tensor):
-  batch_size, n_mels = accent_vector.shape
+  batch_size, _ = accent_vector.shape
   
   # Clamp to avoid NaN
   accent_vector = torch.clamp(accent_vector, min=1e-10)

@@ -1,0 +1,633 @@
+import numpy as np
+from sklearn.metrics import mutual_info_score
+from sklearn.feature_selection import mutual_info_classif
+import pickle
+
+import torch
+
+
+def accent_entropy(accent_vector_batch):
+  batch_size, n_accents = accent_vector_batch.shape
+  
+  # Avoid log(0) by adding a small epsilon
+  eps = 1e-10
+  accent_vector_batch = torch.clamp(accent_vector_batch, min=eps)
+
+  entropy = -(accent_vector_batch * accent_vector_batch.log()).sum(dim=1)
+
+  return entropy.mean().item()
+
+def mel_cepstral_distortion(
+  pred_mel, tgt_mel, mel_mean, mel_std, mask=None, n_mfcc=13, return_sum_and_count=False
+):
+  """
+  Calculate Mel-Cepstral Distortion (MCD) between predicted and target spectrograms.
+
+  Args:
+      pred_mel: Predicted mel-spectrogram, shape (batch, freq_bins, time) or (freq_bins, time)
+      tgt_mel: Target mel-spectrogram, shape (batch, freq_bins, time) or (freq_bins, time)
+      mel_mean: Mean for unnormalization
+      mel_std: Std for unnormalization
+      mask: Boolean mask for valid frames, shape (batch, time). True indicates valid frames.
+            If None, all frames are considered valid.
+      n_mfcc: Number of MFCCs to use (default: 13, excluding the 0th coefficient)
+      return_sum_and_count: If True, return (sum, count) instead of average
+
+  Returns:
+      mcd: Mel-Cepstral Distortion in dB (if return_sum_and_count=False)
+      (sum, count): Sum of MCD and count of valid frames (if return_sum_and_count=True)
+  """
+  # Ensure tensors are on the same device and have the same shape
+  assert pred_mel.shape == tgt_mel.shape, "Spectrograms must have the same shape"
+
+  mel_mean = torch.tensor(mel_mean, device=pred_mel.device).view(1, -1, 1)
+  mel_std = torch.tensor(mel_std, device=pred_mel.device).view(1, -1, 1)
+
+  # Add batch dimension if not present
+  if pred_mel.ndim == 2:
+    pred_mel = pred_mel.unsqueeze(0)
+    tgt_mel = tgt_mel.unsqueeze(0)
+
+  # Unnormalize
+  pred_mel = pred_mel * mel_std + mel_mean
+  tgt_mel = tgt_mel * mel_std + mel_mean
+
+  # Apply DCT (Discrete Cosine Transform) to get cepstral coefficients
+  pred_mfcc = dct(pred_mel)
+  target_mfcc = dct(tgt_mel)
+
+  # Use coefficients 1 to n_mfcc (excluding 0th coefficient which represents energy)
+  pred_mfcc = pred_mfcc[:, 1 : n_mfcc + 1, :]
+  target_mfcc = target_mfcc[:, 1 : n_mfcc + 1, :]
+
+  # Calculate Euclidean distance for each frame
+  diff = pred_mfcc - target_mfcc
+  squared_diff = diff**2
+  sum_squared_diff = torch.sum(squared_diff, dim=1)  # Sum over MFCC dimensions
+  frame_distances = torch.sqrt(sum_squared_diff)
+
+  # Apply the MCD scaling factor: (10 / ln(10)) * sqrt(2)
+  K = (10.0 / torch.log(torch.tensor(10.0))) * torch.sqrt(torch.tensor(2.0))
+  mcd_per_frame = K * frame_distances
+
+  # Apply mask if provided
+  if mask is not None:
+    # Remove empty mel dim
+    if len(mask.shape) == 3 and mask.shape[1] == 1:
+      mask = mask.squeeze(1)
+
+    # Ensure mask has the correct shape
+    assert mask.shape == (pred_mel.shape[0], pred_mel.shape[2]), (
+      f"Mask shape {mask.shape} must match (batch_size, time_frames) = ({pred_mel.shape[0]}, {pred_mel.shape[2]})"
+    )
+
+    # Only consider valid frames (where mask is True)
+    masked_mcd = mcd_per_frame * mask.float()
+
+    # Sum valid frames and count
+    total_mcd = torch.sum(masked_mcd)
+    num_valid_frames = torch.sum(mask.float())
+  else:
+    # Sum all frames and count
+    total_mcd = torch.sum(mcd_per_frame)
+    num_valid_frames = torch.tensor(mcd_per_frame.numel(), dtype=torch.float32)
+
+  if return_sum_and_count:
+    return total_mcd.item(), num_valid_frames.item()
+  else:
+    if num_valid_frames > 0:
+      mcd = total_mcd / num_valid_frames
+    else:
+      mcd = torch.tensor(0.0)
+    return mcd.item()
+
+
+def dct(x):
+  """
+  Compute Discrete Cosine Transform (DCT-II) along the frequency dimension.
+
+  Args:
+      x: Input tensor of shape (batch, freq_bins, time)
+
+  Returns:
+      DCT coefficients of shape (batch, freq_bins, time)
+  """
+  batch, n_freq, n_time = x.shape
+
+  # Create DCT matrix
+  n = torch.arange(n_freq, dtype=x.dtype, device=x.device)
+  k = n.view(-1, 1)
+
+  # DCT-II formula
+  dct_matrix = torch.cos(torch.pi * k * (2 * n + 1) / (2 * n_freq))
+  dct_matrix[0] *= torch.sqrt(torch.tensor(1.0 / n_freq))
+  dct_matrix[1:] *= torch.sqrt(torch.tensor(2.0 / n_freq))
+
+  # Apply DCT transform: matrix multiply along frequency dimension
+  # Reshape for batch matrix multiplication
+  x_reshaped = x.transpose(1, 2)  # (batch, time, freq)
+  dct_result = torch.matmul(x_reshaped, dct_matrix.T)  # (batch, time, freq)
+  dct_result = dct_result.transpose(1, 2)  # (batch, freq, time)
+
+  return dct_result
+
+
+def mutual_information_gap(
+  learned_representations,
+  ground_truth_factors,
+  all_label_vals,
+  factor_names,
+  n_bins=None,
+):
+  """
+  Calculate the Mutual Information Gap (MIG) between learned representations and ground truth factors.
+
+  Generated by Claude and thoroughly tested to verify accuracy.
+
+  Args:
+    learned_representations (np.ndarray): Continuous neural network outputs of shape (batch_size, n_dims)
+    ground_truth_factors (np.ndarray): Discrete ground truth factors of shape (batch_size, n_factors)
+    all_label_vals (List[List[Union[int, float]]]): Global list of lists containing all possible values for each factor
+    factor_names (List[str]): Names of the ground truth factors
+    n_bins (int): Number of bins for discretizing continuous representations
+
+  Returns:
+    float: MIG score (higher is better, max = 1.0)
+    dict: Detailed breakdown with per-factor MIG scores
+  """
+  batch_size, n_factors = ground_truth_factors.shape
+  n_learned_dims = learned_representations.shape[1]
+
+  assert len(factor_names) == n_factors, (
+    "Factor names length must match number of factors."
+  )
+
+  # Ensure ground truth factors are integers
+  ground_truth_factors = ground_truth_factors.astype(int)
+
+  # Calculate mutual information matrix (n_learned_dims x n_factors)
+  mi_matrix = np.zeros((n_learned_dims, n_factors))
+
+  for i in range(n_learned_dims):
+    for j in range(n_factors):
+      X = learned_representations[:, i]
+      y = ground_truth_factors[:, j]
+
+      # Check if there's any variation in the learned representation
+      if np.var(X) < 1e-12:
+        mi_matrix[i, j] = 0.0
+        continue
+
+      # Check for perfect deterministic relationship
+      # If each unique value of y corresponds to a unique value of X, it's deterministic
+      y_to_x_mapping = {}
+      is_deterministic = True
+
+      for idx in range(len(y)):
+        y_val = y[idx]
+        x_val = X[idx]
+
+        if y_val in y_to_x_mapping:
+          # Check if this y value always maps to the same x value (within tolerance)
+          if abs(y_to_x_mapping[y_val] - x_val) > 1e-10:
+            is_deterministic = False
+            break
+        else:
+          y_to_x_mapping[y_val] = x_val
+
+      if is_deterministic:
+        # For perfect deterministic relationship, MI = H(Y)
+        mi_matrix[i, j] = calculate_entropy(y)
+      else:
+        # Use standard MI estimation for non-deterministic relationships
+        if n_bins is None:
+          n_unique_factors = len(np.unique(y))
+          adaptive_bins = min(max(n_unique_factors * 3, 20), batch_size // 10)
+        else:
+          adaptive_bins = n_bins
+
+        try:
+          # Quantile-based binning
+          bin_edges = np.quantile(X, np.linspace(0, 1, adaptive_bins + 1))
+
+          # Handle identical values
+          if np.all(bin_edges == bin_edges[0]):
+            bin_edges = np.linspace(X.min() - 1e-8, X.max() + 1e-8, adaptive_bins + 1)
+
+          X_discrete = np.digitize(X, bin_edges[1:-1])
+          X_discrete = np.clip(X_discrete, 0, adaptive_bins - 1)
+
+          mi_matrix[i, j] = mutual_info_score(X_discrete, y)
+
+        except Exception:
+          # Fallback to sklearn
+          X_reshaped = X.reshape(-1, 1)
+          mi_matrix[i, j] = mutual_info_classif(
+            X_reshaped, y, discrete_features=False, random_state=42
+          )[0]
+
+  # Calculate MIG for each ground truth factor
+  factor_mig_scores = {}
+  total_mig = 0.0
+
+  for j in range(n_factors):
+    factor_name = factor_names[j]
+
+    # Get MI scores for this factor across all learned dimensions
+    mi_scores = mi_matrix[:, j]
+
+    # Sort in descending order to get top 2 scores
+    sorted_scores = np.sort(mi_scores)[::-1]
+
+    # MIG for this factor = (MI_max - MI_second_max) / H(factor)
+    if len(sorted_scores) >= 2:
+      mi_diff = sorted_scores[0] - sorted_scores[1]
+    else:
+      mi_diff = sorted_scores[0] if len(sorted_scores) > 0 else 0.0
+
+    # Calculate entropy of the ground truth factor
+    factor_entropy = calculate_entropy(ground_truth_factors[:, j])
+
+    # Normalize by entropy to get MIG score for this factor
+    if factor_entropy > 1e-8:
+      factor_mig = mi_diff / factor_entropy
+    else:
+      factor_mig = 0.0
+
+    factor_mig_scores[factor_name] = factor_mig
+    total_mig += factor_mig
+
+  # Average MIG across all factors
+  avg_mig = total_mig / n_factors if n_factors > 0 else 0.0
+
+  # Prepare detailed results
+  results = {
+    "mig_score": avg_mig,
+    "factor_scores": factor_mig_scores,
+    "mi_matrix": mi_matrix,
+    "factor_names": factor_names,
+    "best_learned_dim_per_factor": np.argmax(mi_matrix, axis=0),
+    "best_factor_per_learned_dim": np.argmax(mi_matrix, axis=1),
+  }
+
+  return avg_mig, results
+
+
+def calculate_entropy(data):
+  """Calculate the entropy of a discrete variable."""
+  unique_vals, counts = np.unique(data, return_counts=True)
+  probabilities = counts / len(data)
+  probabilities = probabilities[probabilities > 0]
+  entropy = -np.sum(probabilities * np.log2(probabilities))
+  return entropy
+
+
+# Example usage and testing
+if __name__ == "__main__":
+  from torch.utils.data import DataLoader
+  from data.load import ParallelDatasetFactory
+  
+  mode = [
+    "mcd",
+    "mig",
+  ][0]
+
+  if mode == "mcd":
+    from tqdm import tqdm
+    from data.augment import get_augment_fns
+    from data.load import augment_collate_fn
+
+    # Create sample spectrograms
+    batch_size = 500
+    freq_bins = 80  # Typical mel-spectrogram bins
+
+    factory = ParallelDatasetFactory(dataset_dir="../Data/processed/VCTK")
+    dataset = factory.get_dataset(min_transcript_samples=1, sample_pairing="random")
+    loader = DataLoader(
+      dataset,
+      batch_size=batch_size,
+      shuffle=True,
+      collate_fn=augment_collate_fn(get_augment_fns("student")[1]),
+    )
+
+    scalar = None
+
+    with open("../Data/processed/VCTK/norm_scaler.pkl", "rb") as f:
+      scalar = pickle.load(f)
+
+    mel_mean = scalar.mean_
+    mel_std = scalar.scale_
+
+    total_mcd_sum = 0.0
+    total_frame_count = 0
+
+    for batch in tqdm(loader):
+      pred_mel, tgt_mel, _, tgt_mask, _, _ = batch
+
+      # Get sum and count for this batch
+      mcd_sum, frame_count = mel_cepstral_distortion(
+        pred_mel, tgt_mel, mel_mean, mel_std, mask=tgt_mask, return_sum_and_count=True
+      )
+
+      total_mcd_sum += mcd_sum
+      total_frame_count += frame_count
+
+    # Calculate final average
+    if total_frame_count > 0:
+      dataset_mcd = total_mcd_sum / total_frame_count
+      print(f"Dataset MCD: {dataset_mcd:.4f} dB (over {total_frame_count:.0f} frames)")
+    else:
+      print("No valid frames found!")
+
+  if mode == "mig":
+    _NUM_VALUES_PER_FACTOR = {
+      "floor_hue": 10,
+      "wall_hue": 10,
+      "object_hue": 10,
+      "scale": 8,
+      "shape": 4,
+      "orientation": 15,
+    }
+
+    import matplotlib.pyplot as plt
+
+    batch_size = 1000
+    n_factors = 6
+    np.random.seed(42)
+
+    # Ground truth factors
+    ground_truth_factors = np.column_stack(
+      [
+        np.random.randint(0, 10, batch_size),  # floor_hue: 0-9
+        np.random.randint(0, 10, batch_size),  # wall_hue: 0-9
+        np.random.randint(0, 10, batch_size),  # object_hue: 0-9
+        np.random.randint(0, 8, batch_size),  # scale: 0-7
+        np.random.randint(0, 4, batch_size),  # shape: 0-3
+        np.random.randint(0, 15, batch_size),  # orientation: 0-14
+      ]
+    )
+
+    _FACTORS_IN_ORDER = list(_NUM_VALUES_PER_FACTOR.keys())
+
+    # Perfect correlation representations
+    perfect_representations = np.array(
+      [
+        [
+          ground_truth_factors[i, j]
+          / (_NUM_VALUES_PER_FACTOR[_FACTORS_IN_ORDER[j]] - 1)
+          for j in range(n_factors)
+        ]
+        for i in range(batch_size)
+      ]
+    )
+
+    # No correlation representations
+    no_correlation_representations = np.random.rand(batch_size, n_factors)
+
+    all_label_vals = [list(range(val)) for val in _NUM_VALUES_PER_FACTOR.values()]
+
+    # Test with perfect correlation
+    print("=== Perfect Correlation Test ===")
+    mig_score, detailed_results = mutual_information_gap(
+      perfect_representations, ground_truth_factors, all_label_vals
+    )
+    print(f"MIG Score: {mig_score:.4f}")
+    print("\nPer-factor MIG scores:")
+    for factor, score in detailed_results["factor_scores"].items():
+      print(f"  {factor}: {score:.4f}")
+
+    # Test with no correlation
+    print("\n=== No Correlation Test ===")
+    mig_score, detailed_results = mutual_information_gap(
+      no_correlation_representations, ground_truth_factors, all_label_vals
+    )
+    print(f"MIG Score: {mig_score:.4f}")
+    print("\nPer-factor MIG scores:")
+    for factor, score in detailed_results["factor_scores"].items():
+      print(f"  {factor}: {score:.4f}")
+
+    # ===================================================================
+    # VALIDATION TEST 1: Perfect Disentanglement (Identity Mapping)
+    # ===================================================================
+    print("\n" + "=" * 70)
+    print("VALIDATION TEST 1: Perfect Disentanglement")
+    print("=" * 70)
+    print("Each learned dimension perfectly captures exactly one factor.")
+    print("Expected: MIG ≈ 1.0\n")
+
+    perfect_disentangled = perfect_representations.copy()
+    mig_det, results_det = mutual_information_gap(
+      perfect_disentangled, ground_truth_factors, all_label_vals
+    )
+
+    print(f"Deterministic Method MIG: {mig_det:.4f}")
+    print(f"MI Matrix diagonal: {np.diag(results_det['mi_matrix'])}")
+    print(
+      f"Expected (entropies): {[calculate_entropy(ground_truth_factors[:, j]) for j in range(n_factors)]}"
+    )
+
+    # ===================================================================
+    # VALIDATION TEST 2: Complete Entanglement (Random)
+    # ===================================================================
+    print("\n" + "=" * 70)
+    print("VALIDATION TEST 2: Complete Entanglement (Random)")
+    print("=" * 70)
+    print("Learned representations are random, no correlation with factors.")
+    print("Expected: MIG ≈ 0.0\n")
+
+    mig_det, _ = mutual_information_gap(
+      no_correlation_representations, ground_truth_factors, all_label_vals
+    )
+
+    print(f"Deterministic Method MIG: {mig_det:.4f}")
+
+    # ===================================================================
+    # VALIDATION TEST 3: Permuted Dimensions (Still Perfect)
+    # ===================================================================
+    print("\n" + "=" * 70)
+    print("VALIDATION TEST 3: Permuted Dimensions")
+    print("=" * 70)
+    print("Perfect disentanglement but dimensions shuffled.")
+    print("Expected: MIG ≈ 1.0 (MIG should be permutation-invariant)\n")
+
+    # Shuffle the order of dimensions
+    perm = np.random.permutation(n_factors)
+    permuted_representations = perfect_representations[:, perm]
+
+    mig_det, results_det = mutual_information_gap(
+      permuted_representations, ground_truth_factors, all_label_vals
+    )
+
+    print(f"Permutation: {perm}")
+    print(f"Deterministic Method MIG: {mig_det:.4f}")
+    print(f"Best learned dim per factor: {results_det['best_learned_dim_per_factor']}")
+
+    # ===================================================================
+    # VALIDATION TEST 4: Noisy Perfect Correlation
+    # ===================================================================
+    print("\n" + "=" * 70)
+    print("VALIDATION TEST 4: Noisy Perfect Correlation")
+    print("=" * 70)
+    print("Perfect correlation + Gaussian noise at different levels.")
+    print("Expected: MIG decreases smoothly as noise increases\n")
+
+    noise_levels = [0.0, 0.01, 0.05, 0.1, 0.2, 0.5, 1.0]
+
+    print("Noise σ | Det. MIG | Corr. MIG")
+    print("-" * 40)
+
+    noise_results_det = []
+    noise_results_corr = []
+
+    for noise_std in noise_levels:
+      noisy_repr = perfect_representations + np.random.normal(
+        0, noise_std, perfect_representations.shape
+      )
+
+      mig_det, _ = mutual_information_gap(
+        noisy_repr, ground_truth_factors, all_label_vals
+      )
+
+      noise_results_det.append(mig_det)
+
+      print(f"{noise_std:7.2f} | {mig_det:8.4f}")
+
+    # ===================================================================
+    # VALIDATION TEST 5: Partial Entanglement (Some dims capture factors)
+    # ===================================================================
+    print("\n" + "=" * 70)
+    print("VALIDATION TEST 5: Partial Disentanglement")
+    print("=" * 70)
+    print("Only some dimensions capture factors, rest are random.")
+    print("Expected: MIG increases with number of disentangled dimensions\n")
+
+    print("# Disentangled | Det. MIG | Corr. MIG")
+    print("-" * 45)
+
+    partial_results_det = []
+    partial_results_corr = []
+    n_disentangled_list = [0, 1, 2, 3, 4, 5, 6]
+
+    for n_disentangled in n_disentangled_list:
+      partial_repr = no_correlation_representations.copy()
+      partial_repr[:, :n_disentangled] = perfect_representations[:, :n_disentangled]
+
+      mig_det, _ = mutual_information_gap(
+        partial_repr, ground_truth_factors, all_label_vals
+      )
+
+      partial_results_det.append(mig_det)
+
+      print(f"{n_disentangled:14d} | {mig_det:8.4f}")
+
+    # ===================================================================
+    # VALIDATION TEST 6: Collapsed Dimensions (Multiple factors in one dim)
+    # ===================================================================
+    print("\n" + "=" * 70)
+    print("VALIDATION TEST 6: Collapsed Representations")
+    print("=" * 70)
+    print("Multiple factors encoded in single dimension (bad disentanglement).")
+    print("Expected: Low MIG (second-best MI is high)\n")
+
+    # Create a representation where dim 0 = sum of all factors
+    collapsed_repr = np.zeros((batch_size, n_factors))
+    collapsed_repr[:, 0] = np.sum(
+      perfect_representations, axis=1
+    )  # All info in one dim
+    collapsed_repr[:, 1:] = no_correlation_representations[:, 1:]  # Rest random
+
+    mig_det, results_det = mutual_information_gap(
+      collapsed_repr, ground_truth_factors, all_label_vals
+    )
+
+    print(f"Deterministic Method MIG: {mig_det:.4f}")
+    print(f"MI for dim 0 (collapsed): {results_det['mi_matrix'][0, :]}")
+    print(f"Best learned dim per factor: {results_det['best_learned_dim_per_factor']}")
+
+    # ===================================================================
+    # PLOT VALIDATION RESULTS
+    # ===================================================================
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(14, 10))
+
+    # Plot 1: Noise robustness
+    ax1.plot(
+      noise_levels, noise_results_det, marker="o", label="Deterministic", linewidth=2
+    )
+    ax1.plot(
+      noise_levels, noise_results_corr, marker="s", label="Correlation", linewidth=2
+    )
+    ax1.set_xlabel("Noise Level (std)", fontsize=11)
+    ax1.set_ylabel("MIG Score", fontsize=11)
+    ax1.set_title("Test 4: Robustness to Noise", fontsize=12, fontweight="bold")
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    ax1.set_ylim(-0.05, 1.05)
+
+    # Plot 2: Partial disentanglement
+    ax2.plot(
+      n_disentangled_list,
+      partial_results_det,
+      marker="o",
+      label="Deterministic",
+      linewidth=2,
+    )
+    ax2.plot(
+      n_disentangled_list,
+      partial_results_corr,
+      marker="s",
+      label="Correlation",
+      linewidth=2,
+    )
+    ax2.set_xlabel("Number of Disentangled Dimensions", fontsize=11)
+    ax2.set_ylabel("MIG Score", fontsize=11)
+    ax2.set_title("Test 5: Partial Disentanglement", fontsize=12, fontweight="bold")
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    ax2.set_ylim(-0.05, 1.05)
+
+    # Plot 3: MI Matrix for perfect disentanglement
+    factor_names = list(_NUM_VALUES_PER_FACTOR.keys())
+    perfect_disentangled = perfect_representations.copy()
+    _, results = mutual_information_gap(
+      perfect_disentangled, ground_truth_factors, all_label_vals
+    )
+    im3 = ax3.imshow(results["mi_matrix"], cmap="YlOrRd", aspect="auto")
+    ax3.set_xlabel("Ground Truth Factor", fontsize=11)
+    ax3.set_ylabel("Learned Dimension", fontsize=11)
+    ax3.set_title(
+      "Test 1: MI Matrix (Perfect Disentanglement)", fontsize=12, fontweight="bold"
+    )
+    ax3.set_xticks(range(n_factors))
+    ax3.set_xticklabels(factor_names, rotation=45, ha="right")
+    plt.colorbar(im3, ax=ax3, label="Mutual Information")
+
+    # Plot 4: MI Matrix for collapsed representation
+    _, results_collapsed = mutual_information_gap(
+      collapsed_repr, ground_truth_factors, all_label_vals
+    )
+    im4 = ax4.imshow(results_collapsed["mi_matrix"], cmap="YlOrRd", aspect="auto")
+    ax4.set_xlabel("Ground Truth Factor", fontsize=11)
+    ax4.set_ylabel("Learned Dimension", fontsize=11)
+    ax4.set_title(
+      "Test 6: MI Matrix (Collapsed/Entangled)", fontsize=12, fontweight="bold"
+    )
+    ax4.set_xticks(range(n_factors))
+    ax4.set_xticklabels(factor_names, rotation=45, ha="right")
+    plt.colorbar(im4, ax=ax4, label="Mutual Information")
+
+    plt.tight_layout()
+    plt.show()
+
+    # ===================================================================
+    # SUMMARY
+    # ===================================================================
+    print("\n" + "=" * 70)
+    print("VALIDATION SUMMARY")
+    print("=" * 70)
+    print("\n✓ Test 1: Perfect disentanglement should give MIG ≈ 1.0")
+    print("✓ Test 2: Random representations should give MIG ≈ 0.0")
+    print("✓ Test 3: MIG should be invariant to dimension permutation")
+    print("✓ Test 4: MIG should decrease smoothly with noise")
+    print("✓ Test 5: MIG should increase with # of disentangled dims")
+    print("✓ Test 6: Collapsed/entangled reps should have low MIG")
+    print("\nBoth methods should show similar trends across all tests.")

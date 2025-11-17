@@ -26,7 +26,7 @@ date +"%H:%M:%S"
 
 cd ~/Kenku
 # srun --export=ALL python -m train.train_model -lr 1e-6 -wda 2000 -woa 2000 --test-interval 50 --melspec-interval 50 --checkpoint-interval 100 --checkpoint-max 5 --dataset-dir ~/scratch/processed --n-cores $SLURM_CPUS_PER_TASK --min-samples 7 --stack-factor 1 --conv-ch 512 --att-ch 256 -dor 0.2 --epochs 200 --main-loss mse --batch-size 200 --max-test-batches 200 --run-dir ~/scratch/runs/teacher/tuned/$SLURM_JOB_ID
-srun --export=ALL python -m train.train_model --config-dir /home3/s4984218/Kenku/train/configs/best_teacher --run-dir ~/scratch/runs/teacher/final/$SLURM_JOB_ID --n-cores $SLURM_CPUS_PER_TASK
+srun --export=ALL python -m train.train_model --config-dir /home3/s4984218/Kenku/train/configs/train/teacher --run-dir ~/scratch/runs/teacher/final/$SLURM_JOB_ID --n-cores $SLURM_CPUS_PER_TASK
 
 echo "Finished training"
 

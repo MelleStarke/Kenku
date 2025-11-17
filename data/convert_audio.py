@@ -442,7 +442,7 @@ def main():
     print(f"Normalization stats:\n  Mean: {norm_scaler.mean_}\n  STD:  {norm_scaler.scale_}\n  Var:  {norm_scaler.var_}")
     # Save the fitted scaler (which contains the mean and variance) to a pickle file
     with open(norm_scaler_filepath, mode='wb') as f:
-      pickle.dump(norm_scaler_filepath, f)
+      pickle.dump(norm_scaler, f)
 
   #=== Normalization Stat Application ===#
   

@@ -774,7 +774,7 @@ class DRLKenkuStudent(KenkuStudent):
       src_mask, tgt_mask = self.stack_masks(src_mask, tgt_mask)
     
     src_info, src_z, src_mu, src_log_var = self.speaker_info_predictor(src_mel, src_mask)
-    tgt_info, src_z, tgt_mu, tgt_log_var = self.speaker_info_predictor(tgt_mel, tgt_mask)
+    tgt_info, tgt_z, tgt_mu, tgt_log_var = self.speaker_info_predictor(tgt_mel, tgt_mask)
     
     Y, pred_A = super(DRLKenkuStudent, self).forward(src_mel, src_info, tgt_info, stack=False)
     

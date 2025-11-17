@@ -761,7 +761,7 @@ def main():
   use_thaw_scheduler = is_student and train_config['n_thaw_layers'] > 0
   
   if is_student:
-    print(f"\n===== Student from Teacher =====")
+    print("\n===== Student from Teacher =====")
     print(f'Time: {datetime.now().strftime("%H:%M:%S")}')
     teacher_checkpoint_path = model_config['from_teacher']
     teacher_checkpoint = torch.load(teacher_checkpoint_path, map_location=device, weights_only=True)
@@ -804,6 +804,9 @@ def main():
     
     checkpoint_load_path = train_config['from_checkpoint']
     checkpoint = torch.load(checkpoint_load_path, map_location=device, weights_only=True)
+    
+    # Init embed layer to avoid mismatched state dicts
+    model._init_embed_layer(use_drl = use_drl)
     
     model.load_state_dict(checkpoint['model'])
     optimizer.load_state_dict(checkpoint['optimizer'])
@@ -879,7 +882,7 @@ def main():
   
   #=== Start Training ===#
   
-  print(f"\n===== Starting Training =====")
+  print("\n===== Starting Training =====")
   print(f'Time: {datetime.now().strftime("%H:%M:%S")}')
 
   drl_loss_weights = [train_config[k] for k in ['tcvae_alpha', 'tcvae_beta', 'tcvae_gamma']]

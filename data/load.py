@@ -381,7 +381,7 @@ class ParallelMelspecDataset(Dataset, SpeakerInfoMixin):
   def __init__(self, 
                samples: List[MelspecSample],
                transcript_dict: Dict[str, List[int]],
-               age_bounds = (10, 80),
+               age_bounds = (10, 40),
                all_accents = None,
                sample_pairing = 'random',
                rng: Optional[np.random.Generator] = None
@@ -426,7 +426,7 @@ class ParallelMelspecDataset(Dataset, SpeakerInfoMixin):
       src_sample = self.samples[src_idx]
       
     else:
-      raise ValueError(f"'{sample_pairing}' not a valid sample pairing mode. Choose 'random' or 'product'.")
+      raise ValueError(f"'{self.sample_pairing}' not a valid sample pairing mode. Choose 'random' or 'product'.")
       
     src_info = (self.encode_age(src_sample.age),
                 self.encode_gender(src_sample.gender),

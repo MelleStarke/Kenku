@@ -180,9 +180,15 @@ data/test_scaler.py
 */temp.*
 */sandbox*
 
+# Reports
+reports/*
+
 # VSCode/Codium stuff
 *.code-workspace
 .vscode
 
 # Habrok stuff
 *.out
+
+# Ruff formatter
+ruff.toml
