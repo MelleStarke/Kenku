@@ -67,6 +67,16 @@ def mae_loss(pred_mel: Tensor,
 ######################
 
 def auxil_att_loss(pred_means: Tensor, pred_stds: Tensor, true_A: Tensor):
+  """
+  Auxiliary attention loss function. Calculates the difference in Gaussian parameters
+  (mean and std) between predicted and true attention matrices.
+  We do this instead of direct MSE between the attention matrices due to sparsity.
+  
+  Args:
+      pred_means: Predicted attention means. Shape: (batch_size, 1, n_tgt_frames)
+      pred_stds: Predicted attention stds. Shape: (batch_size, 1, n_tgt_frames)
+      true_A: True attention matrices. Shape: (batch_size, n_src_frames, n_tgt_frames)
+  """
   batch_size, n_src_frames, n_tgt_frames = true_A.shape
   # Attention matrix is of shape N x M i.e. src_frames x tgt_frames
   _, M = n_src_frames, n_tgt_frames
@@ -98,7 +108,7 @@ def auxil_att_loss(pred_means: Tensor, pred_stds: Tensor, true_A: Tensor):
 def masked_gauss_dist_matrix(n_rows, n_cols, n_rows_on, n_cols_on, sigma):
   """
   Create a distance matrix using the RBF kernel.
-  Mask the bottom right rectangle of shape (n_rows - n_rows_on) x (n_cols - n_cols_on)
+  Mask off the bottom right rectangle of shape (n_rows - n_rows_on) x (n_cols - n_cols_on)
   
   Args:
       n_rows: Number of rows in the output matrix
@@ -129,6 +139,15 @@ def masked_gauss_dist_matrix(n_rows, n_cols, n_rows_on, n_cols_on, sigma):
   return masked_kernel_matrix
 
 def diag_att_loss(A: Tensor, src_mask: Tensor, tgt_mask: Tensor, tgt_sigma = 0.3):
+  """
+  Diagonal attention loss function. Encourages attention matrices to be diagonal.
+  
+  Args:
+      A: Attention matrices. Shape: (batch_size, n_src_frames, n_tgt_frames)
+      src_mask: Source masks. Shape: (batch_size, 1, n_src_frames)
+      tgt_mask: Target masks. Shape: (batch_size, 1, n_tgt_frames)
+      tgt_sigma: Bandwidth parameter for the RBF kernel that defines the target diagonal attention.
+  """
   batch_size, n_src_frames, n_tgt_frames = A.shape
   
   target_distance_matrices = torch.zeros_like(A)
@@ -149,6 +168,14 @@ def diag_att_loss(A: Tensor, src_mask: Tensor, tgt_mask: Tensor, tgt_sigma = 0.3
   return diag_att_loss
 
 def ortho_att_loss(A: Tensor, src_mask: Tensor, tgt_sigma = 0.3):
+  """
+  Orthogonal attention loss function. Encourages attention matrices to be orthogonal.
+  
+  Args:
+      A: Attention matrices. Shape: (batch_size, n_src_frames, n_tgt_frames)
+      src_mask: Source masks. Shape: (batch_size, 1, n_src_frames)
+      tgt_sigma: Bandwidth parameter for the RBF kernel that defines the target orthogonal attention.
+  """
   device = A.device
   batch_size, n_src_frames, _ = A.shape
   

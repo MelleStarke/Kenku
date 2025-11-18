@@ -82,6 +82,7 @@ logfile_handler.setFormatter(log_formatter)
 class OOMHandler:
   """
   Context manager to catch CUDA OOM errors, clear the cache and continue execution.
+  Prevents complete training crashes due to stray OOM errors only, not for continuous OOMs.
   """
   def __init__(self, model, max_catches=20):
     self.max_catches = max_catches
@@ -138,6 +139,18 @@ class DummyManager:
 
 class CheckpointManager:
   def __init__(self, model, optimizer, save_path, interval=100, max=10):
+    """
+    Manages saving and deleting model checkpoints based on test loss.
+    Needs to be informed of the latest test loss before calling `inform`.
+    Needs to be linked to a TensorboardManager to gain access to the test melspecs.
+    
+    Args:
+        model (nn.Module): The model to save.
+        optimizer (torch.optim.Optimizer): The optimizer to save.
+        save_path (str): Directory where checkpoints are saved.
+        interval (int): Number of batches between each checkpoint attempt.
+        max (int): Maximum number of checkpoints to keep (excluding the latest checkpoint).
+    """
     self.model = model
     self.optimizer = optimizer
     self.save_path = save_path
@@ -227,7 +240,20 @@ class TensorboardManager:
                max_test_batches: int = 100, 
                n_images: int         = 6,
                use_drl: bool         = False):
-      
+    """
+    Manages Tensorboard logging of training and testing losses, as well as
+    test mel-spectrograms and attention matrices.
+    
+    Args:
+        model (nn.Module): The model being trained.
+        test_loader (DataLoader): DataLoader for the test set.
+        directory (str): Directory where Tensorboard logs are stored.
+        n_train_batches (int): Number of batches in the training DataLoader.
+        test_interval (int): Number of batches between each test loss/melspec logging.
+        max_test_batches (int): Maximum number of batches to use for test loss calculation.
+        n_images (int): Number of image samples to log from the test set.
+        use_drl (bool): Whether the model uses Disentangled Representation Learning.
+    """
     self.model = model
     self.test_loader = test_loader
     self.interval = test_interval
@@ -268,6 +294,9 @@ class TensorboardManager:
     return src_mel, tgt_mel, src_info, tgt_info
   
   def link_checkpoint_manager(self, checkpoint_manager):
+    """
+    Links a CheckpointManager to the TensorboardManager to give it access to the test melspecs.
+    """
     self.checkpoint_manager = checkpoint_manager
   
   def inform(self, epoch: int, batch_nr: int):
@@ -429,7 +458,28 @@ def train_model(model: KenkuModel,
                 drl_loss_weights: Optional[List[float]] = None,
                 accent_entropy_weight: Optional[float] = 1.0,
                 scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None):
-
+  """
+  Trains the given model using the provided DataLoader, optimizer, and loss functions.
+  Works with every KenkuModel.
+  
+  Args:
+      model (KenkuModel): The model to train.
+      optimizer (torch.optim.Optimizer): The optimizer to use for training.
+      train_loader (DataLoader): DataLoader for the training set.
+      test_loader (DataLoader): DataLoader for the test set.
+      checkpoint_manager (CheckpointManager): Manager for saving and deleting checkpoints.
+      tensorboard_manager (TensorboardManager): Manager for Tensorboard logging.
+      use_drl (bool): Whether the model uses Disentangled Representation Learning.
+      main_loss_fn (str): Loss function for spectrogram reconstruction ('mse' or 'mae').
+      epochs (int): Number of epochs to train for.
+      train_loss_interval (int): Number of batches between each training loss logging.
+      DAL_weight (float): Initial weight for the Diagonal Attention Loss.
+      OAL_weight (float): Initial weight for the Orthogonal Attention Loss.
+      att_weight_decay (float): Decay rate for attention loss weights. If None, defaults to 4 / epochs.
+      drl_loss_weights (Optional[List[float]]): Weights for DRL loss components [ICMI, TC, DWKL].
+      accent_entropy_weight (Optional[float]): Weight for the accent entropy loss term.
+      scheduler (Optional[torch.optim.lr_scheduler.LRScheduler]): Learning rate scheduler.
+  """
   oom_handler = OOMHandler(model)
   
   dataset_size = len(train_loader.dataset)

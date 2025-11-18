@@ -9,7 +9,7 @@ from data.util import save_config, load_config
 
 from train.train_model import DATASET_CONFIG_KEYS, MODEL_CONFIG_KEYS, TRAIN_CONFIG_KEYS
 
-
+# Shorthand names for settings to make folder names more manageable
 shorthand_setting_names = {
   'stack_factor': 'sf',
   'hidden_ch': 'hc',
@@ -39,6 +39,10 @@ shorthand_setting_names = {
 }
 
 def get_setting(config_dict, idx):
+  """
+  Given a dictionary of hyperparameter lists, and an index, return the specific 
+  combination of hyperparameters corresponding to that index.
+  """
   all_setting_combos = list(product(*config_dict.values()))
   this_setting = all_setting_combos[idx - 1]
   this_setting = dict(zip(config_dict.keys(), this_setting))
@@ -86,6 +90,8 @@ if __name__ == "__main__":
   this_setting.update(static_settings)
   
   #=== Process Hidden Channels Individually or In Tandem ===#
+  # Allow for specifying conv_ch and att_ch either individually or in tandem through hidden_ch.
+  # Channels are multiplied by the stack factor to account for the increased input dimensionality.
   sf = this_setting['stack_factor']
   if all(channel in this_setting for channel in ['conv_ch', 'att_ch']):
     for channel in ['conv_ch', 'att_ch']:

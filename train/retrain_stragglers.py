@@ -2,6 +2,11 @@ import sys
 import os
 import subprocess
 
+"""
+Small script for training hypertuning runs that failed due to space restrictions.
+Likely only viable on the Habrok cluster where the runs were originally executed.
+"""
+
 counter = 0
 
 run_nr = int(sys.argv[1])

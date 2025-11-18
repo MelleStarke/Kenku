@@ -102,6 +102,16 @@ class KenkuModule(nn.Module):
 
 class KenkuEmbedding(KenkuModule):
   def __init__(self, n_accents, n_channels, device=device):
+    """
+    Custom embedding module for KenkuModel classes.
+    Expects pre-scaled age values from ParallelDatasetFactory of ParallelMelspecDataset
+    and numeric (integer) accent values.
+    
+    Args:
+        n_accents (int): Number of accent classes.
+        n_channels (int): Number of output channels for the embedding.
+        device (torch.device, optional): Device to run the embedding on. Defaults to device.
+    """
     super(KenkuEmbedding, self).__init__()
     
     self.n_accents = n_accents
@@ -127,6 +137,13 @@ class KenkuEmbedding(KenkuModule):
     
 class MaskedGlobalPool(KenkuModule):
   def __init__(self, pooling_type: Optional[str] = 'mean'):
+    """
+    Global pooling layer with masking support. 
+    Used by the SpeakerInfoPredictor to convert a variable-length sequence into a fixed-length vector.
+    
+    Args:
+        pooling_type (str, optional): Type of pooling to use. Either 'avg' or 'max'. Defaults to 'mean'.
+    """
     super(MaskedGlobalPool, self).__init__()
     
     assert pooling_type in ['avg', 'max'], f"Pooling type {pooling_type} not supported. Use 'avg' or 'max'."
@@ -163,6 +180,20 @@ class SpeakerInfoPredictor(KenkuModule):
                dropout_rate: Optional[float] = 0.2,
                pooling_type: Optional[str] = 'avg',
   ):
+    """
+    Module for predicting speaker properties vector from Mel-spectrograms.
+    
+    Args:
+        in_ch (int): Number of input channels (features) in the Mel-spectrogram.
+        conv_ch (int): Number of convolutional channels (uniform across conv layers).
+        out_ch (int): Number of output channels (excluding mean and log-variance).
+        num_conv_layers (int, optional): Number of convolutional layers. Defaults to 6.
+        kernel_size (int, optional): Kernel size for convolutional layers. Defaults to 5.
+        dilations (List[int], optional): List of dilations for each convolutional layer. 
+                                         If None, defaults to [1,3,9,1,3,9]. Defaults to None.
+        dropout_rate (float, optional): Dropout rate. Defaults to 0.2.
+        pooling_type (str, optional): Type of global pooling to use ('avg' or 'max'). Defaults to 'avg'.
+    """
     super(SpeakerInfoPredictor, self).__init__()
     
     # Keep track of the paddings each conv layer output. To be used during the next forward call.
@@ -250,6 +281,15 @@ class DRLKenkuEmbedding(KenkuModule):
   def __init__(self, n_accents: int, 
                n_channels: int, 
                device=device):
+    """
+    Custom embedding module for KenkuModel classes using DRL-predicted speaker info.
+    Expects speaker info vectors from SpeakerInfoPredictor.
+    
+    Args:
+        n_accents (int): Number of accent classes.
+        n_channels (int): Number of output channels for the embedding.
+        device (torch.device, optional): Device to run the embedding on. Defaults to device.
+    """
     super(DRLKenkuEmbedding, self).__init__()
     self.lin_layer = weight_norm(nn.Linear(n_accents + 2, n_channels)).to(device)
 
@@ -367,18 +407,12 @@ class KameBlock(KenkuModule):
     # Lazy init to allow for DRL embedding
     if self.embed_layer is None:
       self._init_embed_layer()
+      
     try:
       batch_size, in_ch, timesteps = X.shape
-    except AttributeError as e:
-      # print(f"X len: {len(X)}")
-      # for i, x in enumerate(X):
-      #   shape = x.shape if isinstance(x, (Tensor, np.ndarray)) else ""
-      #   print(f"ELEM: {i}/{len(X)}\n"
-      #         f"TYPE: {type(x)}\n"
-      #         f"SHAPE: {shape}\n"
-      #         f"VAL:\n{x}\n")
       
-      # raise e
+    except AttributeError as e:
+      # Handle case where X is a tuple containing a single tensor
       if isinstance(X, tuple) and len(X) == 1 and isinstance(X[0], Tensor):
         X = X[0]
         batch_size, in_ch, timesteps = X.shape
@@ -399,6 +433,7 @@ class KameBlock(KenkuModule):
     embedding = self.embed_layer(speaker_info).unsqueeze(-1).repeat(1, 1, timesteps)
     
     #=== Forward Pass ===#
+    # Linear input layer
     X_    = self.dropout(X)
     X_emb = concat_embedding(embedding, X_)
     X_    = self.in_layer(X_emb)
@@ -407,6 +442,7 @@ class KameBlock(KenkuModule):
     for i, layer in enumerate(self.conv_blocks):
       X_, padding = layer(X_, embedding, padding=self.paddings[i])
       
+      # If doing live (i.e. streaming) conversion
       if self.inference:
         self.paddings[i] = padding
     
@@ -423,7 +459,7 @@ class KameBlock(KenkuModule):
   
   def clear_paddings(self):
     """
-    Reset dynamic padding to None. Used between passing of batches.
+    Reset dynamic padding to None. Used between passing of batches in live conversion.
     """
     self.paddings = [None] * len(self.conv_blocks)
   
@@ -488,6 +524,13 @@ class ConvGLU(KenkuModule):
 
 class KenkuAttention(KenkuModule):
   def __init__(self, view_distance: Optional[int]=64):
+    """
+    Base class for Kenku attention modules. Provides causal masking functionality.
+    
+    Args:
+        view_distance (int, optional): Maximum number of previous source frames that can be attended to.
+                                       Defaults to 64.
+    """
     self.view_distance = view_distance
     super(KenkuAttention, self).__init__()
     
@@ -514,7 +557,8 @@ class KenkuAttention(KenkuModule):
 class ScaledDotProductAttention(KenkuAttention):
   
   def forward(self, K, V, Q):
-    """Manual scaled dot product attention. Since the attention matrix should be passed for loss calculation.
+    """
+    Implements scaled dot-product attention with causal masking.
 
     Args:
         K (Tensor): Key   tensor of shape (batch, mels, frames)
@@ -544,60 +588,81 @@ class AttentionPredictor(KenkuAttention):
                dropout_rate: Optional[float] = 0.2,
                view_distance: Optional[int] = 64,
                rng: Union[torch.Generator, int] = None):
-      super(AttentionPredictor, self).__init__(view_distance=view_distance)
-      
-      if rng is None:
-        self.rng = torch.Generator(device=device)
-      elif isinstance(rng, torch.Generator):
-        self.rng = rng
-      elif isinstance(rng, int):
-        self.rng = torch.Generator(device=device).manual_seed(rng)
-      else:
-        raise ValueError(f"Expected passed generator to be of type None, int, or torch.Generator. Got {type(rng)}.")
-      
-      # 1 extra input channel for the random noise
-      self.encoder = KameBlock(in_ch + 1, conv_ch, 1, embed_ch, num_accents,
-                               num_conv_layers      = num_conv_layers,
-                               kernel_size          = kernel_size,
-                               num_output_streams   = 3,  # One for each Gaussian parameter
-                               signal_segment_len   = signal_segment_len,
-                               dilations            = dilations,
-                               dropout_rate         = dropout_rate
-                               )
-      
-      
-  def forward(self, src_mels: Tensor, tgt_info: Tuple[List[int], List[str], List[str]], n_tgt_frames: int = None):
-    device = src_mels.device
-    dtype  = src_mels.dtype
+    """
+    Module for predicting attention matrices using Gaussian attention 
+    from source spectrogram and target speaker properties alone.
     
-    batch_size, _, n_src_frames = src_mels.shape
-    n_tgt_frames = n_src_frames if n_tgt_frames is None else n_tgt_frames
+    Args:
+        in_ch (int): Number of input channels (features) in the Mel-spectrogram.
+        conv_ch (int): Number of convolutional channels (uniform across conv layers).
+        embed_ch (int): Number of embedding channels for speaker properties.
+        num_accents (int): Number of accent classes.
+        num_conv_layers (int, optional): Number of convolutional layers. Defaults to 8.
+        kernel_size (int, optional): Kernel size for convolutional layers. Defaults to 5.
+        signal_segment_len (int, optional): Length of signal segments for streaming. Defaults to 80.
+        dilations (List[int], optional): List of dilations for each convolutional layer. 
+                                         If None, defaults to [1, 3, 9, 27, 1, 3, 9, 27]. Defaults to None.
+        dropout_rate (float, optional): Dropout rate. Defaults to 0.2.
+        view_distance (int, optional): Maximum number of previous source frames that can be attended to.
+                                       Defaults to 64.
+        rng (Union[torch.Generator, int], optional): Random number generator or seed for Gaussian noise.
+                                                     If None, a new generator will be created. Defaults to None.
+    """
+    super(AttentionPredictor, self).__init__(view_distance=view_distance)
     
-    # Add Gaussian noise channel (mean=0, std=1) to facilitate many-to-one mapping
-    gauss_noise_ch = torch.normal(0, 1, (batch_size, 1, n_src_frames), generator=self.rng, device=device, dtype=dtype)
-    src_mels = torch.cat((gauss_noise_ch, src_mels), dim=1)
+    if rng is None:
+      self.rng = torch.Generator(device=device)
+    elif isinstance(rng, torch.Generator):
+      self.rng = rng
+    elif isinstance(rng, int):
+      self.rng = torch.Generator(device=device).manual_seed(rng)
+    else:
+      raise ValueError(f"Expected passed generator to be of type None, int, or torch.Generator. Got {type(rng)}.")
     
-    # Get Gaussian parameters from the encoder
-    mean_deltas, stds, scalars = self.encoder(src_mels, tgt_info)
+    # 1 extra input channel for the random noise
+    self.encoder = KameBlock(in_ch + 1, conv_ch, 1, embed_ch, num_accents,
+                              num_conv_layers      = num_conv_layers,
+                              kernel_size          = kernel_size,
+                              num_output_streams   = 3,  # One for each Gaussian parameter
+                              signal_segment_len   = signal_segment_len,
+                              dilations            = dilations,
+                              dropout_rate         = dropout_rate
+                              )
     
-    #=== Post-Process Gaussian Parameters ===#
-    mean_deltas = torch.abs(mean_deltas)
-    stds        = torch.clamp(torch.abs(stds), 0.001, 1.0)
-    scalars     = 0.2 * torch.sigmoid(scalars) + 0.8
     
-    #=== Order Means ===#
-    upper_triangular_mat = torch.triu(torch.ones(n_src_frames, n_src_frames, device=device))
-    means = torch.matmul(mean_deltas, upper_triangular_mat)  # Shape batch_size X out_ch(1) X n_frames
+def forward(self, src_mels: Tensor, tgt_info: Tuple[List[int], List[str], List[str]], n_tgt_frames: int = None):
+  device = src_mels.device
+  dtype  = src_mels.dtype
+  
+  batch_size, _, n_src_frames = src_mels.shape
+  n_tgt_frames = n_src_frames if n_tgt_frames is None else n_tgt_frames
+  
+  # Add Gaussian noise channel (mean=0, std=1) to facilitate many-to-one mapping
+  gauss_noise_ch = torch.normal(0, 1, (batch_size, 1, n_src_frames), generator=self.rng, device=device, dtype=dtype)
+  src_mels = torch.cat((gauss_noise_ch, src_mels), dim=1)
+  
+  # Get Gaussian parameters from the encoder
+  mean_deltas, stds, scalars = self.encoder(src_mels, tgt_info)
+  
+  #=== Post-Process Gaussian Parameters ===#
+  mean_deltas = torch.abs(mean_deltas)
+  stds        = torch.clamp(torch.abs(stds), 0.001, 1.0)
+  scalars     = 0.2 * torch.sigmoid(scalars) + 0.8
+  
+  #=== Order Means ===#
+  upper_triangular_mat = torch.triu(torch.ones(n_src_frames, n_src_frames, device=device))
+  means = torch.matmul(mean_deltas, upper_triangular_mat)  # Shape batch_size X out_ch(1) X n_frames
 
-    tgt_frame_idxs   = torch.arange(n_tgt_frames).view(1, 1, n_tgt_frames).to(device)
-    unnorm_gauss_att = scalars[...,None] * torch.exp(-(tgt_frame_idxs - means[...,None])**2 / (2 * stds[...,None]**2))
-    
-    norm_gauss_att = unnorm_gauss_att / (unnorm_gauss_att.sum(dim=-1, keepdim=True) + 1e-8)
-    norm_gauss_att = norm_gauss_att.squeeze()  # Remove empty channel: B x 1 x N x M -> B x N x M
-    
-    norm_gauss_att = self.apply_causal_mask(norm_gauss_att)
-    
-    return norm_gauss_att, means, stds
+  # Scale means to be within the range of target frames
+  tgt_frame_idxs   = torch.arange(n_tgt_frames).view(1, 1, n_tgt_frames).to(device)
+  unnorm_gauss_att = scalars[...,None] * torch.exp(-(tgt_frame_idxs - means[...,None])**2 / (2 * stds[...,None]**2))
+  
+  norm_gauss_att = unnorm_gauss_att / (unnorm_gauss_att.sum(dim=-1, keepdim=True) + 1e-8)
+  norm_gauss_att = norm_gauss_att.squeeze()  # Remove empty channel: B x 1 x N x M -> B x N x M
+  
+  norm_gauss_att = self.apply_causal_mask(norm_gauss_att)
+  
+  return norm_gauss_att, means, stds
     
 
 if __name__ == "__main__":

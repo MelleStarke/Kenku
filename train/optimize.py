@@ -1,9 +1,7 @@
 import torch
 from torch.optim.lr_scheduler import LambdaLR
 
-import numpy as np
-
-from typing import Union, List, Tuple, Optional
+from typing import Union, Optional
 from typing_extensions import override
 
 from network import KenkuStudent
@@ -100,7 +98,7 @@ class IncrementalThawScheduler(LambdaLR):
                optimizer,
                total_steps: Optional[int] = None, 
                warmup_steps: Union[int, float] = 0.1, 
-               thawing_steps: Union[int, float] = 0.4):
+               thawing_steps: Union[int, float] = 0.5):
     """
     Scheduler that thaws groups of parameters incrementally during training.
     The thawing schedule is as follows:
@@ -112,7 +110,7 @@ class IncrementalThawScheduler(LambdaLR):
     Args:
         optimizer (torch.optim.Optimizer): The optimizer for which to schedule the learning rate.
         total_steps (int, optional): Total number of steps for training. If None, all other parameters must be integers.
-        warmup_steps (int or float, optional): Number of steps (or fraction of total_steps) for the warmup phase. Default is 0.15.
+        warmup_steps (int or float, optional): Number of steps (or fraction of total_steps) for the warmup phase. Default is 0.1.
         thawing_steps (int or float, optional): Number of steps (or fraction of total_steps) for the thawing phase. Default is 0.5.
                                                 Each group is thawed gradually by linearly increasing the learning rate.
                                                 Reaching the max when the next group begins thawing.
