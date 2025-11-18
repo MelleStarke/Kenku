@@ -1,4 +1,3 @@
-import torch
 from torch.optim.lr_scheduler import LambdaLR
 
 from typing import Union, Optional
@@ -179,58 +178,3 @@ class IncrementalThawScheduler(LambdaLR):
       base_lr * lmbda(self.last_step)
       for lmbda, base_lr in zip(self.lr_lambdas, self.base_lrs)
     ]
-
-    
-if __name__ == "__main__":
-    from network import KenkuTeacher, DRLKenkuTeacher, DRLKenkuStudent
-    ch = 32
-    model = DRLKenkuTeacher(ch, ch, ch, ch, 12, 11)
-    
-    model = model.to_student({})
-    
-    # thawing_groups, static_group, untrained_group = group_student_params(model)
-    param_groups = group_student_params(model, max_groups=21, format_for_optimizer=True)
-    
-    # all_names = sorted(np.ravel([[g[0] for g in group] for group in thawing_groups]).tolist() + [g[0] for g in static_group] + [g[0] for g in untrained_group])
-    # model_param_names = sorted([name for name, param in model.named_parameters()])
-    # assert all_names == model_param_names, "Some parameters are missing in the groups!"
-
-    opt = torch.optim.Adam(param_groups, lr=0.001)
-    
-    total_steps = 1000
-    warmup_steps = 0.1
-    thawing_steps = 0.4
-    scheduler = IncrementalThawScheduler(opt, total_steps=total_steps, warmup_steps=warmup_steps, thawing_steps=thawing_steps)
-    
-    group_lrs = [[] for _ in range(len(param_groups))]
-    
-    for step in range(total_steps):
-      opt.step()
-      scheduler.step()
-      lrs = scheduler.get_last_lr()
-      for i, lr in enumerate(lrs):
-        group_lrs[i].append(lr)
-        
-    import matplotlib.pyplot as plt
-    fig = plt.figure(figsize=(10, 7))
-    for i, lrs in enumerate(group_lrs):
-      plt.plot(lrs, label=f"{opt.param_groups[i]['name']}")
-    plt.axvline(x=int(total_steps * warmup_steps) - 1, color='gray', linestyle='--')
-    plt.axvline(x=int(total_steps * (warmup_steps + thawing_steps)) - 1, color='gray', linestyle='--')
-    
-    # plt.axvline(x=int(total_steps * 0.3893936584461339), color='k', linestyle='-')
-    
-    plt.xlabel('Training Step')
-    plt.ylabel('Learning Rate')
-    plt.title('Learning Rate Schedule with Incremental Thawing (Base Learning Rate = 0.001)')
-    plt.legend()
-    plt.grid()
-    fig.savefig('./train/plots/thawing_example.pdf')
-    plt.show()
-    
-    
-    for name, param in model.named_parameters():
-      print(f"{name}: requires_grad={param.requires_grad}")
-      
-    for name, module in model.named_modules():
-      print(f"{name}")

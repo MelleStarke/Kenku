@@ -4,7 +4,6 @@ import os
 import h5py
 import logging
 import joblib
-import matplotlib.pyplot as plt
 
 from copy import copy
 from csv import DictReader
@@ -14,7 +13,7 @@ from pathlib import Path
 
 from typing import List, Optional, Dict, Callable
 
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 
 from itertools import product
 
@@ -522,62 +521,3 @@ class ParallelMelspecDataset(Dataset, SpeakerInfoMixin):
       tgt_mask = tgt_mask[:,:,::stack_factor]
     
     return inner
-
-if __name__ == "__main__":
-  
-  mode = ['basic',
-          'test set len',
-          'sample idx lengths',
-          'validation',
-          'distribution'][4]
-
-  factory = ParallelDatasetFactory(dataset_dir = "../Data/processed/VCTK")
-  
-  dataset = factory.get_dataset()
-  
-  loader = DataLoader(dataset, batch_size = 8, shuffle = True, collate_fn = collate_fn)
-  
-  # Regular data loading
-  if mode == 'sample idx lengths':
-    train_set, test_set = factory.train_test_split(min_transcript_samples=5)
-    print(f"train set sample idxs lengths: {list(map(len, train_set.transcript_dict.values()))}")
-    print(f"test set sample idxs lengths:  {list(map(len, test_set.transcript_dict.values()))}")
-    
-  
-  if mode == 'test set len':
-    
-    for mini in range(3, 11):
-      train_set, test_set = factory.train_test_split(mini, sample_pairing=('prod', 'rand'))
-      print((f"{mini}:\n  TRAIN: {len(train_set)} | {len(train_set.transcript_dict)}\n" 
-                     f"  TEST:  {len(test_set)} | {len(test_set.transcript_dict)}" 
-                     f"  prop: {len(test_set) / len(train_set):.4}"))
-    
-
-  #=== Test/Validation Split ===#
-  if mode == 'validation':
-    # Test split
-    print(len(dataset))
-    train_set, test_set = dataset.train_test_split(sample_pairing='rand')
-    print(len(test_set), len(train_set))
-    print(len(test_set) + len(train_set))
-    
-    train_idxs = np.concatenate(list(train_set.transcript_dict.values()))
-    test_idxs  = np.concatenate(list(test_set.transcript_dict.values()))
-    print(set(train_idxs) & set(test_idxs))
-    print(len(set(train_idxs) | set(test_idxs)))
-  
-  # Sentence sample distribution
-  if mode == 'distribution':
-    factory = ParallelDatasetFactory(dataset_dir = "../Data/processed/VCTK")
-    dataset = factory.get_dataset(min_transcript_samples=0)
-    # print(ds.class_dirs)
-    # print([len(d) for d in ds.filenames])
-    
-    print(f"min: {min(sorted([len(d) for d in dataset.transcript_dict.values()]))} | max: {max(sorted([len(d) for d in dataset.transcript_dict.values()]))}")
-    print(f'n sentences: {len(sorted([len(d) for d in dataset.transcript_dict.values()]))}')
-    print(f'n samples: {sum(sorted([len(d) for d in dataset.transcript_dict.values()]))}')
-    plt.bar(range(len(dataset.transcript_dict)), sorted([len(d) for d in dataset.transcript_dict.values()]))
-    plt.ylabel("N sentence samples")
-    plt.xlabel("sentence")
-    plt.title("Sentence distribution (min = 20)")
-    plt.show()

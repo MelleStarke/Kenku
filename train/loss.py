@@ -3,7 +3,7 @@ import numpy as np
 import logging
 import torch
 
-from torch import Tensor, is_tensor
+from torch import Tensor
 from pathlib import Path
 
 
@@ -311,86 +311,3 @@ def accent_entropy_loss(accent_vector: Tensor):
   # Entropy over accent dimension
   entropy = -(accent_vector * accent_vector.log()).sum(dim=1)
   return entropy.mean()
-  
-
-if __name__ == "__main__":
-  import matplotlib.pyplot as plt
-  from data.load import ParallelDatasetFactory, collate_fn
-  from torch.utils.data import DataLoader
-  from network import prepend_zero_frame
-  
-  mode = [
-    'attention_masking',
-    'auxil_loss'
-  ][1]
-  
-  dataset_factory = ParallelDatasetFactory(dataset_dir = '../Data/processed/VCTK')
-  
-  train_set, test_set = dataset_factory.train_test_split(min_transcript_samples = 8,
-                                                         train_set_threshold    = 10,
-                                                         sample_pairing         = 'random',
-                                                         downsample             = True)
-
-  data_loader_kwargs = {
-    'batch_size'  : 6,
-    'shuffle'     : True,
-    'num_workers' : 12,
-    'collate_fn'  : collate_fn,
-    'drop_last'   : True,
-    'pin_memory'  : True
-  }
-  train_loader = DataLoader(train_set, **data_loader_kwargs)
-  test_loader  = DataLoader(test_set,  **data_loader_kwargs)
-  
-  
-  if mode == 'attention_masking':
-    src_mel, tgt_mel, src_mask, tgt_mask, src_info, tgt_info = next(iter(test_loader))
-    tgt_mel = prepend_zero_frame(tgt_mel)
-    batch = src_mel, tgt_mel, src_mask, tgt_mask, src_info, tgt_info
-    [print(t.shape) if is_tensor(t) else print([e.shape for e in t]) for t in batch]
-
-    print(mse_loss(src_mel, tgt_mel[:,:,1:], tgt_mask))
-
-    rbf_mat = masked_gauss_dist_matrix(20, 60, 15, 40, 0.3)
-    print(rbf_mat.min(), rbf_mat.max())
-    print(rbf_mat.shape)
-
-    N = src_mel.shape[2]
-    T = tgt_mel.shape[2]
-
-    print(f"N: {N} | T: {T}")
-
-    W = np.zeros((6,N,T))
-    for b in range(6):
-      Nb = int(torch.sum(src_mask[b,:,:]))
-      Tb = int(torch.sum(tgt_mask[b,:,:]))
-      nN = np.arange(0,N)/Nb
-      tT = np.arange(0,T)/Tb
-      nN_tiled = np.tile(nN[:,np.newaxis], (1,T))
-      tT_tiled = np.tile(tT[np.newaxis,:], (N,1))
-      W[b,:,:] = 1.0-np.exp(-np.square(nN_tiled - tT_tiled)/(2.0*0.3**2))
-      # W[b,Nb:N,Tb:T] = 0.
-      W[b,Nb:,:] = 0.
-      W[b,:,Tb:] = 0.
-
-      plt.imshow(W[b], aspect='auto')
-      plt.show()
-      
-  elif mode == 'auxil_loss':
-    N = 1024
-    true_A = torch.eye(N,N).view(1,N,N)
-    pred_means = torch.arange(N).view(1,1,N)
-    pred_stds  = torch.zeros(N).view(1,1,N)
-    
-    print("Test with ID matrix as attention matrix. Pred means: arange(N), pred stds: zeros. Expected: 0")
-    print(auxil_att_loss(pred_means, pred_stds, true_A))
-    
-    idx_mat = torch.arange(N).view(N,1) - torch.arange(N).view(1,N)
-    norm = torch.distributions.Normal(0,1)
-    true_A = torch.exp(norm.log_prob(idx_mat)).view(1,N,N)
-    
-    pred_means = torch.arange(N).view(1,1,N)
-    pred_stds  = torch.ones(N).view(1,1,N)
-    
-    print("Test with standard gaussian matrix. Pred means: arange(N), pred stds: ones. Expected: 0")
-    print(auxil_att_loss(pred_means, pred_stds, true_A))
