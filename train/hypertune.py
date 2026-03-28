@@ -21,7 +21,6 @@ shorthand_setting_names = {
   'num_accents': 'nac',
   'min_samples': 'ms',
   'train_set_threshold': 'tst',
-  'dropout_rate': 'dor',
   'main_loss': 'mlf',
   'tcvae_alpha': 'tca',
   'tcvae_beta': 'tcb',
